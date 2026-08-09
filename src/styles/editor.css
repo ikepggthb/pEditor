@@ -1,0 +1,302 @@
+.pe-editor {
+  position: relative;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  background: var(--pe-bg);
+  font-family: var(--pe-font);
+  font-size: var(--pe-font-size, 15px);
+  line-height: 1.5;
+  font-variant-ligatures: none;
+  font-feature-settings: 'liga' 0, 'calt' 0;
+  --pe-gutter-w: 44px;
+  --pe-line-h: 22px;
+  --pe-char-w: 8px;
+}
+
+.pe-scroller {
+  position: absolute;
+  inset: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.pe-sizer {
+  position: relative;
+  min-width: 100%;
+  min-height: 100%;
+}
+
+/* ------------------------------------------------------------------ gutter */
+
+.pe-gutter {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  z-index: 2;
+  background: var(--pe-bg);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.pe-gutter-hidden {
+  display: none;
+}
+
+.pe-gutter-line {
+  position: absolute;
+  right: calc(var(--pe-char-w) * 1);
+  height: var(--pe-line-h);
+  line-height: var(--pe-line-h);
+  color: var(--pe-gutter-fg);
+  font-size: 0.85em;
+  font-variant-numeric: tabular-nums;
+}
+
+.pe-gutter-current {
+  color: var(--pe-gutter-fg-active);
+}
+
+/* ----------------------------------------------------------------- content */
+
+.pe-content {
+  position: absolute;
+  top: 0;
+  left: var(--pe-gutter-w);
+  right: 0;
+  bottom: 0;
+  /* Native selection is replaced by the editor's own; letting the browser
+     select would fight the custom handles and the long-press gesture. */
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.pe-lines,
+.pe-selection-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+}
+
+.pe-selection-layer {
+  z-index: 0;
+}
+
+.pe-lines {
+  z-index: 1;
+}
+
+.pe-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  white-space: pre;
+  contain: layout style;
+}
+
+.pe-line-active {
+  background: var(--pe-active-line);
+}
+
+.pe-row {
+  height: var(--pe-line-h);
+  line-height: var(--pe-line-h);
+  white-space: pre;
+}
+
+/*
+ * The two escape hatches that keep rendering aligned with the layout maths:
+ * a tab is pure horizontal space of an exact width, and a run of East Asian
+ * characters is boxed to exactly two cells per character. Without these, any
+ * font whose CJK advance is not exactly 2x would drift out of the grid and the
+ * caret would land on the wrong character.
+ */
+.pe-tab {
+  display: inline;
+}
+
+.pe-w {
+  display: inline-block;
+  /* Overflow stays visible on purpose: an inline-block that clips takes its
+     baseline from the box edge instead of the text, which would misalign CJK
+     glyphs against the ASCII around them. */
+  overflow: visible;
+}
+
+/* --------------------------------------------------------- caret/selection */
+
+.pe-sel {
+  position: absolute;
+  height: var(--pe-line-h);
+  background: var(--pe-selection);
+  border-radius: 2px;
+  pointer-events: none;
+}
+
+.pe-composition {
+  position: absolute;
+  height: var(--pe-line-h);
+  border-bottom: 2px solid var(--accent);
+  pointer-events: none;
+}
+
+.pe-caret {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 2px;
+  background: var(--pe-caret);
+  border-radius: 1px;
+  z-index: 4;
+  opacity: 0;
+  pointer-events: none;
+  will-change: transform;
+}
+
+.pe-caret-visible {
+  opacity: 1;
+}
+
+.pe-caret-visible.pe-caret-blink {
+  animation: pe-blink 1.06s steps(1) infinite;
+}
+
+@keyframes pe-blink {
+  0%,
+  45% {
+    opacity: 1;
+  }
+  50%,
+  95% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pe-caret-visible.pe-caret-blink {
+    animation: none;
+  }
+}
+
+/* -------------------------------------------------------------- hidden input */
+
+.pe-input {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 3;
+  width: 2px;
+  min-height: 0;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  outline: none;
+  resize: none;
+  overflow: hidden;
+  white-space: pre;
+  opacity: 0;
+  color: transparent;
+  background: transparent;
+  caret-color: transparent;
+  /* It is parked on the caret so IME candidate windows appear in the right
+     place — which puts an invisible 2px target directly under wherever you
+     just tapped. Focus is given programmatically, so it never needs to be
+     hit-testable, and taking it out of hit testing stops it from stealing the
+     second tap of a double tap. */
+  pointer-events: none;
+  /* Under 16px, iOS Safari zooms the page when the field takes focus. */
+  font-size: 16px;
+  line-height: 1;
+}
+
+.pe-measure {
+  position: absolute;
+  top: -9999px;
+  left: 0;
+  visibility: hidden;
+  white-space: pre;
+  pointer-events: none;
+}
+
+/* ------------------------------------------------------------------ handles */
+
+.pe-handles {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  pointer-events: none;
+}
+
+.pe-handle {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 34px;
+  height: 34px;
+  margin: -3px 0 0 -17px;
+  display: none;
+  touch-action: none;
+  will-change: transform;
+}
+
+.pe-handles-visible .pe-handle-shown {
+  display: block;
+  pointer-events: auto;
+}
+
+.pe-handle-knob {
+  position: absolute;
+  left: 50%;
+  top: 4px;
+  width: 15px;
+  height: 15px;
+  margin-left: -7.5px;
+  border-radius: 50%;
+  background: var(--pe-caret);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  transition: transform 0.12s ease;
+}
+
+/* Point each selection knob back towards the text it controls. */
+.pe-handle-start .pe-handle-knob {
+  border-radius: 50% 0 50% 50%;
+  margin-left: -13px;
+}
+
+.pe-handle-end .pe-handle-knob {
+  border-radius: 0 50% 50% 50%;
+  margin-left: -2px;
+}
+
+.pe-handles-dragging .pe-handle-knob {
+  transform: scale(1.35);
+}
+
+/* -------------------------------------------------------------------- tokens */
+
+.tk-keyword { color: var(--tok-keyword); }
+.tk-control { color: var(--tok-control); }
+.tk-literal { color: var(--tok-literal); }
+.tk-string { color: var(--tok-string); }
+.tk-number { color: var(--tok-number); }
+.tk-comment { color: var(--tok-comment); font-style: italic; }
+.tk-operator { color: var(--tok-operator); }
+.tk-punctuation { color: var(--tok-punctuation); }
+.tk-function { color: var(--tok-function); }
+.tk-type { color: var(--tok-type); }
+.tk-property { color: var(--tok-property); }
+.tk-variable { color: var(--tok-variable); }
+.tk-regexp { color: var(--tok-regexp); }
+.tk-tag { color: var(--tok-tag); }
+.tk-attribute { color: var(--tok-attribute); }
+.tk-heading { color: var(--tok-heading); font-weight: 600; }
+.tk-link { color: var(--tok-link); text-decoration: underline; }
+.tk-invalid { color: var(--tok-invalid); text-decoration: underline wavy; }
+.tk-text { color: var(--fg); }

@@ -1,0 +1,21 @@
+{
+  "name": "peditor",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "A code editor built for writing code on a phone.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test \"test/*.test.ts\"",
+    "check": "npm run typecheck && npm test",
+    "icons": "node scripts/generate-icons.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "typescript": "^5.6.3",
+    "vite": "^8.2.1"
+  }
+}

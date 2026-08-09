@@ -1,0 +1,85 @@
+/**
+ * Colour tokens.
+ *
+ * Dark is the default because that is what a phone screen at night calls for,
+ * and because it is the theme the syntax palette was tuned against. `data-theme`
+ * on <html> is set by the app; the media query only decides what "auto" means.
+ */
+:root {
+  --ui-font: system-ui, -apple-system, 'Segoe UI', Roboto, 'Hiragino Sans', 'Noto Sans JP', sans-serif;
+  --pe-font: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Roboto Mono', 'Noto Sans Mono CJK JP', monospace;
+
+  --bg: #12141a;
+  --bg-raised: #181b23;
+  --bg-sunken: #0d0f14;
+  --border: #262b36;
+  --fg: #d8dee9;
+  --fg-dim: #8b93a7;
+  --accent: #7aa2f7;
+  --accent-soft: rgba(122, 162, 247, 0.18);
+  --danger: #f7768e;
+
+  --pe-bg: #12141a;
+  --pe-gutter-fg: #4d5668;
+  --pe-gutter-fg-active: #9aa5bd;
+  --pe-caret: #7aa2f7;
+  --pe-selection: rgba(122, 162, 247, 0.28);
+  --pe-active-line: rgba(255, 255, 255, 0.035);
+
+  --tok-keyword: #bb9af7;
+  --tok-control: #f7768e;
+  --tok-literal: #ff9e64;
+  --tok-string: #9ece6a;
+  --tok-number: #ff9e64;
+  --tok-comment: #5d6785;
+  --tok-operator: #89ddff;
+  --tok-punctuation: #9aa5bd;
+  --tok-function: #7aa2f7;
+  --tok-type: #2ac3de;
+  --tok-property: #73daca;
+  --tok-variable: #d8dee9;
+  --tok-regexp: #b4f9f8;
+  --tok-tag: #f7768e;
+  --tok-attribute: #bb9af7;
+  --tok-heading: #7aa2f7;
+  --tok-link: #73daca;
+  --tok-invalid: #ff5370;
+}
+
+:root[data-theme='light'] {
+  --bg: #ffffff;
+  --bg-raised: #f6f7f9;
+  --bg-sunken: #eceef2;
+  --border: #dcdfe6;
+  --fg: #1f2430;
+  --fg-dim: #6b7280;
+  --accent: #2f6feb;
+  --accent-soft: rgba(47, 111, 235, 0.14);
+  --danger: #d13438;
+
+  --pe-bg: #ffffff;
+  --pe-gutter-fg: #a5acbb;
+  --pe-gutter-fg-active: #4b5563;
+  --pe-caret: #2f6feb;
+  --pe-selection: rgba(47, 111, 235, 0.2);
+  --pe-active-line: rgba(0, 0, 0, 0.035);
+
+  --tok-keyword: #8250df;
+  --tok-control: #cf222e;
+  --tok-literal: #953800;
+  --tok-string: #0a7c42;
+  --tok-number: #953800;
+  --tok-comment: #8b949e;
+  --tok-operator: #0550ae;
+  --tok-punctuation: #57606a;
+  --tok-function: #1f6feb;
+  --tok-type: #0f766e;
+  --tok-property: #116329;
+  --tok-variable: #1f2430;
+  --tok-regexp: #0a7c42;
+  --tok-tag: #cf222e;
+  --tok-attribute: #8250df;
+  --tok-heading: #1f6feb;
+  --tok-link: #0f766e;
+  --tok-invalid: #d13438;
+}
