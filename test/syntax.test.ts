@@ -7,6 +7,8 @@ import { typescript } from '../src/editor/syntax/languages/javascript.ts';
 import { json } from '../src/editor/syntax/languages/json.ts';
 import { markdown } from '../src/editor/syntax/languages/markdown.ts';
 import { html } from '../src/editor/syntax/languages/html.ts';
+import { c } from '../src/editor/syntax/languages/c.ts';
+import { rust } from '../src/editor/syntax/languages/rust.ts';
 
 /** Tokenise a whole snippet and return `[text, type]` pairs per line. */
 function tokenize(language: Language<any>, source: string): [string, TokenType][][] {
@@ -105,11 +107,67 @@ test('HTML separates tags, attributes and values', () => {
   assert.equal(typeOf(rows, 'text'), 'text');
 });
 
+test('C: preprocessor, types and macros', () => {
+  const rows = tokenize(c, '#include <stdio.h>\nstatic int main(void) {\n  return MAX_LEN;\n}');
+  assert.equal(typeOf(rows, '#include'), 'keyword');
+  assert.equal(typeOf(rows, 'static'), 'keyword');
+  assert.equal(typeOf(rows, 'int'), 'type');
+  assert.equal(typeOf(rows, 'main'), 'function');
+  assert.equal(typeOf(rows, 'return'), 'control');
+  assert.equal(typeOf(rows, 'MAX_LEN'), 'literal');
+});
+
+test('C: char literals and block comments spanning lines', () => {
+  const rows = tokenize(c, "char c = '\\n'; /* start\nstill comment */ int x;");
+  assert.equal(typeOf(rows, "'\\n'"), 'string');
+  assert.equal(rows[1][0][1], 'comment');
+  assert.equal(typeOf([rows[1]], 'int'), 'type');
+});
+
+test('C: size_t and friends read as types', () => {
+  const rows = tokenize(c, 'size_t n = 0; my_own_t v;');
+  assert.equal(typeOf(rows, 'size_t'), 'type');
+  assert.equal(typeOf(rows, 'my_own_t'), 'type');
+});
+
+test('Rust: keywords, macros, lifetimes and attributes', () => {
+  const rows = tokenize(rust, '#[derive(Debug)]\npub fn run<\'a>(v: &\'a mut Vec<u8>) -> Option<u8> {\n  println!("hi");\n}');
+  assert.equal(typeOf(rows, '#[derive(Debug)]'), 'attribute');
+  assert.equal(typeOf(rows, 'pub'), 'keyword');
+  assert.equal(typeOf(rows, 'fn'), 'keyword');
+  assert.equal(typeOf(rows, "'a"), 'type');
+  assert.equal(typeOf(rows, 'Vec'), 'type');
+  assert.equal(typeOf(rows, 'u8'), 'type');
+  assert.equal(typeOf(rows, 'println!'), 'function');
+  assert.equal(typeOf(rows, '"hi"'), 'string');
+});
+
+test('Rust: block comments nest', () => {
+  const rows = tokenize(rust, '/* outer /* inner */ still outer */ let x = 1;');
+  assert.equal(typeOf(rows, 'let'), 'keyword');
+  assert.equal(rows[0][0][1], 'comment');
+  assert.equal(rows[0][0][0], '/* outer /* inner */ still outer */');
+});
+
+test('Rust: raw strings carry across lines and ignore quotes', () => {
+  const rows = tokenize(rust, 'let s = r#"a "quoted" line\nsecond"#;\nlet t = 2;');
+  assert.equal(rows[1][0][1], 'string');
+  assert.equal(typeOf([rows[2]], 'let'), 'keyword');
+});
+
+test("Rust: a lone ' is a lifetime, a quoted one is a char", () => {
+  assert.equal(typeOf(tokenize(rust, "let c = 'x';"), "'x'"), 'string');
+  assert.equal(typeOf(tokenize(rust, "struct S<'life>;"), "'life"), 'type');
+});
+
 test('languages are picked by file extension', () => {
   assert.equal(languageForFilename('a/b/main.ts').id, 'typescript');
   assert.equal(languageForFilename('style.css').id, 'css');
   assert.equal(languageForFilename('README.md').id, 'markdown');
   assert.equal(languageForFilename('package.json').id, 'json');
+  assert.equal(languageForFilename('main.rs').id, 'rust');
+  assert.equal(languageForFilename('main.c').id, 'c');
+  assert.equal(languageForFilename('util.h').id, 'c');
   assert.equal(languageForFilename('notes').id, 'plain');
   assert.equal(languageForFilename('mystery.xyz').id, 'plain');
   assert.equal(languageById('nope').id, 'plain');

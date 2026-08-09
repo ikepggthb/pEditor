@@ -14,9 +14,18 @@ import { selectionRange } from '../model/selection.ts';
  * The textarea's own value is kept empty and never used as the source of
  * truth; every event is translated into an editor command instead.
  */
+export type InputMode = 'system' | 'custom';
+
 export class TextInput {
   readonly textarea: HTMLTextAreaElement;
   private disposers: (() => void)[] = [];
+  /**
+   * Which keyboard is driving the editor. In 'custom' mode the textarea is
+   * deliberately left unfocused so the OS keyboard stays closed, while the
+   * editor keeps its caret and acts focused — the app's own keyboard is
+   * supplying the keystrokes.
+   */
+  private mode: InputMode = 'system';
 
   private readonly editor: Editor;
 
@@ -81,7 +90,11 @@ export class TextInput {
       editor.setFocused(true);
       this.syncPosition();
     });
-    on(textarea, 'blur', () => editor.setFocused(false));
+    on(textarea, 'blur', () => {
+      // Losing focus on purpose to close the OS keyboard is not the editor
+      // losing focus — the custom keyboard is still typing into it.
+      if (this.mode === 'system') editor.setFocused(false);
+    });
 
     on(textarea, 'copy', (event) => this.onCopy(event as ClipboardEvent, false));
     on(textarea, 'cut', (event) => this.onCopy(event as ClipboardEvent, true));
@@ -167,6 +180,12 @@ export class TextInput {
 
   /** Open the on-screen keyboard. Must run inside a user gesture on iOS. */
   focus(): void {
+    if (this.mode === 'custom') {
+      // Keep the caret alive without asking the platform for its keyboard.
+      this.editor.setFocused(true);
+      this.syncPosition();
+      return;
+    }
     if (document.activeElement !== this.textarea) {
       this.textarea.focus({ preventScroll: true });
     }
@@ -175,6 +194,23 @@ export class TextInput {
 
   blur(): void {
     this.textarea.blur();
+    this.editor.setFocused(false);
+  }
+
+  get inputMode(): InputMode {
+    return this.mode;
+  }
+
+  /**
+   * Switch keyboards. Call from inside a user gesture: returning to 'system'
+   * focuses the textarea, and iOS only opens the keyboard for a focus that a
+   * gesture asked for.
+   */
+  setMode(mode: InputMode): void {
+    if (this.mode === mode) return;
+    this.mode = mode;
+    if (mode === 'custom') this.textarea.blur();
+    else if (this.editor.isFocused) this.focus();
   }
 
   /**

@@ -1,10 +1,12 @@
 import { Editor, DEFAULT_CONFIG, type EditorConfig } from '../editor/core/editor.ts';
-import { TextInput } from '../editor/input/textInput.ts';
+import { TextInput, type InputMode } from '../editor/input/textInput.ts';
 import { SelectionHandles } from '../editor/input/handles.ts';
 import { PointerInput } from '../editor/input/pointer.ts';
+import { PinchZoom } from '../editor/input/pinch.ts';
 import { LANGUAGES, languageForFilename } from '../editor/syntax/highlighter.ts';
 import { columnAt } from '../editor/view/columns.ts';
 import { KeyBar } from './keybar.ts';
+import { CodeKeyboard } from './keyboard/keyboard.ts';
 import { h, segmentRow, selectRow, toggleRow } from './dom.ts';
 import { debounce, loadDocument, loadSettings, saveDocument, saveSettings, throttle } from './storage.ts';
 import { lockDocumentScroll, trackVisualViewport } from './viewport.ts';
@@ -12,6 +14,7 @@ import { SAMPLE_FILENAME, SAMPLE_TEXT } from './sample.ts';
 
 type Theme = 'auto' | 'dark' | 'light';
 const THEME_KEY = 'peditor.theme.v1';
+const KEYBOARD_KEY = 'peditor.keyboard.v1';
 
 /** The application shell: chrome around the editor, plus what persists. */
 export class App {
@@ -19,7 +22,9 @@ export class App {
   private input: TextInput;
   private handles: SelectionHandles;
   private pointer: PointerInput;
+  private pinch: PinchZoom;
   private keybar: KeyBar;
+  private keyboard: CodeKeyboard;
 
   private root: HTMLDivElement;
   private nameField: HTMLInputElement;
@@ -32,6 +37,9 @@ export class App {
 
   private fileName: string;
   private theme: Theme = (localStorage.getItem(THEME_KEY) as Theme) ?? 'auto';
+  /** Which keyboard the editor uses. The code keyboard is the default; the
+   *  platform one is a tap away and is the only one that can run an IME. */
+  private keyboardMode: InputMode = (localStorage.getItem(KEYBOARD_KEY) as InputMode) ?? 'custom';
 
   private readonly host: HTMLElement;
 
@@ -45,7 +53,9 @@ export class App {
     this.input = new TextInput(this.editor);
     this.handles = new SelectionHandles(this.editor, () => this.input.syncPosition());
     this.pointer = new PointerInput(this.editor, this.input, this.handles);
-    this.keybar = new KeyBar(this.editor, this.input);
+    this.pinch = new PinchZoom(this.editor);
+    this.keybar = new KeyBar(this.editor, this.input, () => this.setKeyboardMode('custom'));
+    this.keyboard = new CodeKeyboard(this.editor, () => this.setKeyboardMode('system'));
 
     this.nameField = h('input', {
       class: 'topbar-name',
@@ -85,19 +95,28 @@ export class App {
       keyboardButton,
     ]);
 
-    this.root.append(topbar, editorHost, statusbar, this.keybar.element, this.sheet);
+    this.root.append(
+      topbar,
+      editorHost,
+      statusbar,
+      this.keybar.element,
+      this.keyboard.element,
+      this.sheet,
+    );
     this.host.appendChild(this.root);
 
     this.editor.mount(editorHost);
     this.input.attach();
     this.handles.attach();
     this.pointer.attach();
+    this.pinch.attach();
+    this.input.setMode(this.keyboardMode);
 
     this.applyTheme();
     this.editor.setLanguage(languageForFilename(this.fileName).id);
     this.buildSheet();
 
-    menuButton.addEventListener('click', () => this.toggleSheet());
+    menuButton.addEventListener('click', () => this.openSheet());
     keyboardButton.addEventListener('click', () => this.input.blur());
     this.undoButton.addEventListener('pointerdown', (event) => {
       event.preventDefault();
@@ -128,7 +147,7 @@ export class App {
       persist();
     });
     this.editor.on('selection', () => this.updateStatus());
-    this.editor.on('focus', () => this.keybar.setVisible(this.editor.isFocused));
+    this.editor.on('focus', () => this.syncKeyboards());
     this.editor.on('config', () => {
       this.updateStatus();
       saveSettings(this.editor.config);
@@ -142,9 +161,27 @@ export class App {
 
     lockDocumentScroll();
     trackVisualViewport(this.root);
-    this.keybar.setVisible(false);
+    this.syncKeyboards();
     this.updateStatus();
     this.updateSize();
+  }
+
+  /** Show whichever keyboard is selected, and only while the editor is active. */
+  private syncKeyboards(): void {
+    const active = this.editor.isFocused;
+    const custom = this.keyboardMode === 'custom';
+    this.keybar.setVisible(active && !custom);
+    this.keyboard.setVisible(active && custom);
+  }
+
+  private setKeyboardMode(mode: InputMode): void {
+    if (this.keyboardMode === mode) return;
+    this.keyboardMode = mode;
+    localStorage.setItem(KEYBOARD_KEY, mode);
+    // Runs inside the tap that requested it, which is what lets iOS open the
+    // platform keyboard when switching back to it.
+    this.input.setMode(mode);
+    this.syncKeyboards();
   }
 
   private persist(): void {
@@ -179,15 +216,59 @@ export class App {
 
   // -------------------------------------------------------------- settings UI
 
-  private toggleSheet(): void {
-    const open = this.sheet.hasAttribute('hidden');
-    if (open) {
-      this.sheet.removeAttribute('hidden');
-      requestAnimationFrame(() => this.sheet.classList.add('sheet-open'));
-    } else {
-      this.sheet.classList.remove('sheet-open');
-      setTimeout(() => this.sheet.setAttribute('hidden', ''), 200);
-    }
+  private openSheet(): void {
+    if (!this.sheet.hasAttribute('hidden')) return;
+    this.sheet.removeAttribute('hidden');
+    this.sheet.scrollTop = 0;
+    requestAnimationFrame(() => this.sheet.classList.add('sheet-open'));
+  }
+
+  private closeSheet(): void {
+    if (this.sheet.hasAttribute('hidden')) return;
+    this.sheet.classList.remove('sheet-open');
+    this.sheet.style.removeProperty('--sheet-y');
+    setTimeout(() => this.sheet.setAttribute('hidden', ''), 200);
+  }
+
+  /**
+   * Drag the sheet's header downwards to dismiss it.
+   *
+   * Only the header is draggable: the body is a scrolling list, and a gesture
+   * that both scrolls content and drags the container is the kind of thing that
+   * ends up doing neither. Offset travels through a custom property because the
+   * sheet's transform also carries its horizontal centering on wide screens.
+   */
+  private bindSheetDrag(grip: HTMLElement): void {
+    let startY = 0;
+    let offset = 0;
+    let dragging = false;
+
+    grip.addEventListener('pointerdown', (event) => {
+      dragging = true;
+      startY = event.clientY;
+      offset = 0;
+      grip.setPointerCapture(event.pointerId);
+      this.sheet.style.transition = 'none';
+    });
+
+    grip.addEventListener('pointermove', (event) => {
+      if (!dragging) return;
+      offset = Math.max(0, event.clientY - startY);
+      this.sheet.style.setProperty('--sheet-y', `${offset}px`);
+    });
+
+    const end = (event: PointerEvent) => {
+      if (!dragging) return;
+      dragging = false;
+      if (grip.hasPointerCapture(event.pointerId)) grip.releasePointerCapture(event.pointerId);
+      this.sheet.style.removeProperty('transition');
+      this.sheet.style.removeProperty('--sheet-y');
+      // Far enough to read as intent rather than a slip.
+      if (offset > 80) this.closeSheet();
+    };
+
+    grip.addEventListener('pointerup', end);
+    grip.addEventListener('pointercancel', end);
   }
 
   private buildSheet(): void {
@@ -214,12 +295,22 @@ export class App {
       this.nameField.value = file.name;
       this.editor.setValue(text, file.name);
       this.persist();
-      this.toggleSheet();
+      this.closeSheet();
     });
 
-    this.sheet.append(
+    const grip = h('div', { class: 'sheet-grip' }, [
       h('div', { class: 'sheet-handle' }),
       h('div', { class: 'sheet-title', text: 'Settings' }),
+    ]);
+    this.bindSheetDrag(grip);
+
+    this.sheet.append(
+      grip,
+
+      segmentRow('Keyboard', [
+        { value: 'custom', label: 'Code' },
+        { value: 'system', label: 'System' },
+      ], this.keyboardMode, (value) => this.setKeyboardMode(value as InputMode)),
 
       selectRow(
         'Language',
@@ -263,11 +354,11 @@ export class App {
           this.nameField.value = this.fileName;
           this.editor.setValue('', this.fileName);
           this.persist();
-          this.toggleSheet();
+          this.closeSheet();
         }),
       ]),
 
-      this.actionButton('Close', () => this.toggleSheet(), 'sheet-close'),
+      this.actionButton('Close', () => this.closeSheet(), 'sheet-close'),
       fileInput,
     );
   }

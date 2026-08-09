@@ -4,10 +4,22 @@ import { json } from './languages/json.ts';
 import { css } from './languages/css.ts';
 import { html } from './languages/html.ts';
 import { markdown } from './languages/markdown.ts';
+import { c } from './languages/c.ts';
+import { rust } from './languages/rust.ts';
 import { plain } from './languages/plain.ts';
 import type { Language, Token } from './types.ts';
 
-export const LANGUAGES: Language<any>[] = [typescript, javascript, json, css, html, markdown, plain];
+export const LANGUAGES: Language<any>[] = [
+  typescript,
+  javascript,
+  rust,
+  c,
+  json,
+  css,
+  html,
+  markdown,
+  plain,
+];
 
 export function languageById(id: string): Language<any> {
   return LANGUAGES.find((l) => l.id === id) ?? plain;

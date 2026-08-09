@@ -9,6 +9,7 @@ import {
   moveWord,
   toggleComment,
 } from '../editor/core/commands.ts';
+import { bindKey } from './holdRepeat.ts';
 
 interface KeyDef {
   label: string;
@@ -19,40 +20,39 @@ interface KeyDef {
   run: () => void;
 }
 
-const REPEAT_DELAY = 320;
-const REPEAT_INTERVAL = 55;
-
 /**
- * The accessory key bar.
+ * The accessory strip shown above the platform keyboard.
  *
- * Soft keyboards have no Tab, no Escape, no arrow keys, and bury `{`, `[` and
- * `|` two layers deep — which is most of what writing code consists of. This
- * bar puts them one tap away, directly above the keyboard.
- *
- * Every button suppresses its default action on `pointerdown` so the hidden
- * textarea never loses focus; if it did, the keyboard would close on each tap.
+ * While the OS keyboard is up it owns most of the screen and cannot be
+ * rearranged, so this adds back the keys it lacks — Tab, arrows, brackets — in
+ * the one strip of space left. When the app's own keyboard is in use this is
+ * hidden, because that keyboard already has all of it.
  */
 export class KeyBar {
   readonly element: HTMLDivElement;
-  private repeatTimer: number | null = null;
-  private repeatInterval: number | null = null;
-
   private readonly editor: Editor;
   private readonly input: TextInput;
+  private unbind: (() => void)[] = [];
 
-  constructor(editor: Editor, input: TextInput) {
+  constructor(editor: Editor, input: TextInput, onCustomKeyboard: () => void) {
     this.editor = editor;
     this.input = input;
+
     this.element = document.createElement('div');
     this.element.className = 'keybar';
 
     const nav = document.createElement('div');
     nav.className = 'keybar-nav';
+    nav.appendChild(
+      this.button(
+        { label: '⌨', title: 'Code keyboard', run: onCustomKeyboard },
+        { keepFocus: false },
+      ),
+    );
     for (const key of this.navKeys()) nav.appendChild(this.button(key));
 
     const symbols = document.createElement('div');
     symbols.className = 'keybar-symbols';
-    symbols.dataset.scrollable = 'true';
     for (const key of this.symbolKeys()) symbols.appendChild(this.button(key));
 
     this.element.append(nav, symbols);
@@ -120,7 +120,7 @@ export class KeyBar {
     ];
   }
 
-  private button(key: KeyDef): HTMLButtonElement {
+  private button(key: KeyDef, options: { keepFocus?: boolean } = {}): HTMLButtonElement {
     const node = document.createElement('button');
     node.type = 'button';
     node.className = key.wide ? 'keybar-key keybar-key-wide' : 'keybar-key';
@@ -128,43 +128,25 @@ export class KeyBar {
     node.title = key.title;
     node.setAttribute('aria-label', key.title);
 
-    const fire = () => {
-      key.run();
-      this.input.focus();
-    };
-
-    node.addEventListener('pointerdown', (event) => {
-      // Keeping focus on the textarea is what stops the keyboard from closing.
-      event.preventDefault();
-      node.classList.add('is-pressed');
-      fire();
-      if (key.repeat) {
-        this.repeatTimer = window.setTimeout(() => {
-          this.repeatInterval = window.setInterval(fire, REPEAT_INTERVAL);
-        }, REPEAT_DELAY);
-      }
-    });
-
-    const stop = () => {
-      node.classList.remove('is-pressed');
-      this.stopRepeat();
-    };
-    node.addEventListener('pointerup', stop);
-    node.addEventListener('pointercancel', stop);
-    node.addEventListener('pointerleave', stop);
-
+    this.unbind.push(
+      bindKey(node, {
+        repeat: key.repeat,
+        onFire: () => {
+          key.run();
+          // Switching keyboards must not immediately re-open the one we left.
+          if (options.keepFocus !== false) this.input.focus();
+        },
+      }),
+    );
     return node;
   }
 
-  private stopRepeat(): void {
-    if (this.repeatTimer !== null) clearTimeout(this.repeatTimer);
-    if (this.repeatInterval !== null) clearInterval(this.repeatInterval);
-    this.repeatTimer = null;
-    this.repeatInterval = null;
-  }
-
-  /** Only worth showing while the keyboard is up. */
   setVisible(visible: boolean): void {
     this.element.classList.toggle('keybar-hidden', !visible);
+  }
+
+  destroy(): void {
+    for (const dispose of this.unbind) dispose();
+    this.unbind = [];
   }
 }
