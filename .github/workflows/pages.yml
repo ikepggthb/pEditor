@@ -1,0 +1,58 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [claude/mobile-dev-editor-vavs4o, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Let a running deploy finish rather than cancelling it half-published.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      # Typecheck and the DOM-free unit tests. A red build should not deploy.
+      - run: npm run check
+
+      - run: npm run build
+
+      # A standalone copy, downloadable from /peditor.html, for using the editor
+      # without installing it.
+      - run: npm run build:single
+
+      - uses: actions/configure-pages@v5
+        with:
+          # Turns Pages on for the repository if it is not enabled yet, so this
+          # works without a visit to the repository settings.
+          enablement: true
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

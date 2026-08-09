@@ -11,7 +11,8 @@
     "typecheck": "tsc --noEmit",
     "test": "node --test \"test/*.test.ts\"",
     "check": "npm run typecheck && npm test",
-    "icons": "node scripts/generate-icons.mjs"
+    "icons": "node scripts/generate-icons.mjs",
+    "build:single": "node scripts/build-single-file.mjs"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",
