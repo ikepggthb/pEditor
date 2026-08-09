@@ -180,16 +180,12 @@
 .kbd {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 6px;
-  padding-bottom: max(6px, env(safe-area-inset-bottom));
   background: var(--bg-sunken);
   border-top: 1px solid var(--border);
-  /* Roughly the share of the screen a platform keyboard takes, measured
-     against the visual viewport rather than vh so it is right when the
-     platform keyboard is not up. */
-  height: min(310px, calc(var(--pe-vv-height, 100vh) * 0.46));
-  min-height: 190px;
+  /* Default is roughly the share of the screen a platform keyboard takes,
+     measured against the visual viewport rather than vh so it is right while
+     the platform keyboard is closed. Dragging the grip overrides `--kbd-h`. */
+  height: var(--kbd-h, min(310px, calc(var(--pe-vv-height, 100vh) * 0.46)));
   touch-action: manipulation;
   user-select: none;
   -webkit-user-select: none;
@@ -199,9 +195,40 @@
   display: none;
 }
 
+.kbd-grip {
+  flex: none;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  touch-action: none;
+  cursor: ns-resize;
+}
+
+.kbd-grip > span {
+  width: 40px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+  transition: background 0.12s ease;
+}
+
+.kbd-grip.is-dragging > span,
+.kbd-grip:hover > span {
+  background: var(--accent);
+}
+
+.kbd-rows {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0 4px max(4px, env(safe-area-inset-bottom));
+}
+
 .kbd-row {
   display: flex;
-  gap: 5px;
+  gap: 3px;
   flex: 1;
   min-height: 0;
 }

@@ -32,8 +32,12 @@ export interface Layer {
 
 const char = (value: string, shift?: string): Key => ({ label: value, text: value, shift });
 
-const BACKSPACE: Key = { label: '⌫', action: 'backspace', variant: 'muted' };
-const ENTER: Key = { label: '↵', action: 'enter', variant: 'accent' };
+// Backspace, enter and shift are wider than a letter, as on any keyboard:
+// they are hit often, hit in a hurry, and hitting the wrong one costs more
+// than a mistyped letter does.
+const BACKSPACE: Key = { label: '⌫', action: 'backspace', variant: 'muted', flex: 1.8 };
+const ENTER: Key = { label: '↵', action: 'enter', variant: 'accent', flex: 2.2 };
+const SHIFT: Key = { label: '⇧', action: 'shift', variant: 'muted', flex: 1.5 };
 
 /**
  * The bottom row is identical across layers so its keys stay where your thumb
@@ -68,12 +72,7 @@ const letters: Layer = {
       ...['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l'].map((v) => char(v, v.toUpperCase())),
       BACKSPACE,
     ],
-    [
-      { label: '⇧', action: 'shift', variant: 'muted' },
-      ...['z', 'x', 'c', 'v', 'b', 'n', 'm'].map((v) => char(v, v.toUpperCase())),
-      char('.'),
-      ENTER,
-    ],
+    [SHIFT, ...['z', 'x', 'c', 'v', 'b', 'n', 'm'].map((v) => char(v, v.toUpperCase())), char('.'), ENTER],
     bottomRow('#+='),
   ],
 };

@@ -33,10 +33,21 @@ const REPEATING: ReadonlySet<KeyAction> = new Set<KeyAction>([
  * only the platform keyboard has. The ⌨ key hands off to it, which is why that
  * key sits in the fixed bottom row rather than in a menu.
  */
+export interface CodeKeyboardOptions {
+  /** Hand off to the platform keyboard (the only one with an IME). */
+  onSystemKeyboard: () => void;
+  /** Called when the user finishes resizing, so the height can be persisted. */
+  onHeightChange: (height: number) => void;
+  initialHeight?: number;
+}
+
+const MIN_HEIGHT = 150;
+
 export class CodeKeyboard {
   readonly element: HTMLDivElement;
   private readonly editor: Editor;
-  private readonly onSystemKeyboard: () => void;
+  private readonly options: CodeKeyboardOptions;
+  private readonly rowsHost: HTMLDivElement;
 
   private layer: LayerId = 'letters';
   private shift: ShiftState = 'off';
@@ -44,13 +55,81 @@ export class CodeKeyboard {
   private shiftable: { node: HTMLElement; key: Key }[] = [];
   private shiftNode: HTMLElement | null = null;
   private unbind: (() => void)[] = [];
+  private height = 0;
 
-  constructor(editor: Editor, onSystemKeyboard: () => void) {
+  constructor(editor: Editor, options: CodeKeyboardOptions) {
     this.editor = editor;
-    this.onSystemKeyboard = onSystemKeyboard;
+    this.options = options;
+
     this.element = document.createElement('div');
     this.element.className = 'kbd kbd-hidden';
+    this.element.appendChild(this.buildGrip());
+
+    this.rowsHost = document.createElement('div');
+    this.rowsHost.className = 'kbd-rows';
+    this.element.appendChild(this.rowsHost);
+
+    if (options.initialHeight) this.setHeight(options.initialHeight);
     this.build();
+  }
+
+  /** The bar along the top edge; drag it to make the keyboard taller or shorter. */
+  private buildGrip(): HTMLElement {
+    const grip = document.createElement('div');
+    grip.className = 'kbd-grip';
+    grip.setAttribute('aria-label', 'Resize keyboard');
+    grip.appendChild(document.createElement('span'));
+
+    let startY = 0;
+    let startHeight = 0;
+    let pending = 0;
+    let frame = 0;
+
+    grip.addEventListener('pointerdown', (event) => {
+      event.preventDefault();
+      startY = event.clientY;
+      startHeight = this.element.getBoundingClientRect().height;
+      grip.setPointerCapture(event.pointerId);
+      grip.classList.add('is-dragging');
+    });
+
+    grip.addEventListener('pointermove', (event) => {
+      if (!grip.hasPointerCapture(event.pointerId)) return;
+      // Dragging up (negative delta) makes it taller.
+      pending = startHeight - (event.clientY - startY);
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        this.setHeight(pending);
+      });
+    });
+
+    const end = (event: PointerEvent) => {
+      if (!grip.hasPointerCapture(event.pointerId)) return;
+      grip.releasePointerCapture(event.pointerId);
+      grip.classList.remove('is-dragging');
+      if (frame) {
+        cancelAnimationFrame(frame);
+        frame = 0;
+        this.setHeight(pending);
+      }
+      this.options.onHeightChange(this.height);
+      this.editor.requestScrollToCaret();
+    };
+    grip.addEventListener('pointerup', end);
+    grip.addEventListener('pointercancel', end);
+
+    return grip;
+  }
+
+  private setHeight(height: number): void {
+    const viewport = window.visualViewport?.height ?? window.innerHeight;
+    // Leave at least a few lines of the document visible above it.
+    const max = Math.max(MIN_HEIGHT, Math.min(560, viewport * 0.72));
+    const next = Math.round(Math.max(MIN_HEIGHT, Math.min(max, height)));
+    if (next === this.height) return;
+    this.height = next;
+    this.element.style.setProperty('--kbd-h', `${next}px`);
   }
 
   private build(): void {
@@ -58,13 +137,13 @@ export class CodeKeyboard {
     this.unbind = [];
     this.shiftable = [];
     this.shiftNode = null;
-    this.element.textContent = '';
+    this.rowsHost.textContent = '';
 
     for (const row of LAYERS[this.layer].rows) {
       const rowNode = document.createElement('div');
       rowNode.className = 'kbd-row';
       for (const key of row) rowNode.appendChild(this.buildKey(key));
-      this.element.appendChild(rowNode);
+      this.rowsHost.appendChild(rowNode);
     }
     this.applyShiftLabels();
   }
@@ -140,7 +219,7 @@ export class CodeKeyboard {
         this.build();
         break;
       case 'systemKeyboard':
-        this.onSystemKeyboard();
+        this.options.onSystemKeyboard();
         break;
     }
   }

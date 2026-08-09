@@ -56,42 +56,14 @@ export function trackVisualViewport(root: HTMLElement): () => void {
  * half off-screen with no way back.
  */
 export function lockDocumentScroll(): void {
+  // Nothing here may register a non-passive `touchmove`. Such a listener forces
+  // the browser to wait for JavaScript before it can move a single pixel, which
+  // turns every flick into visible stutter. The page is pinned with CSS instead
+  // — `overflow: hidden` and `overscroll-behavior: none` on the document, and
+  // `overscroll-behavior: contain` on each scroller — so scrolling stays on the
+  // compositor where it belongs.
   const reset = () => {
     if (window.scrollY !== 0 || window.scrollX !== 0) window.scrollTo(0, 0);
   };
   window.addEventListener('scroll', reset, { passive: true });
-
-  // Decided once per gesture, on touchstart, so the per-move handler stays
-  // trivial. An earlier version keyed this off an opt-in attribute, which meant
-  // every scrollable region had to remember to declare itself — and the ones
-  // that forgot simply could not be scrolled at all. Asking the element whether
-  // it actually scrolls cannot be forgotten.
-  let gestureMayScroll = false;
-
-  document.addEventListener(
-    'touchstart',
-    (event) => {
-      gestureMayScroll = event.touches.length > 1 || hasScrollableAncestor(event.target as Element | null);
-    },
-    { passive: true },
-  );
-
-  document.addEventListener(
-    'touchmove',
-    (event) => {
-      if (gestureMayScroll || event.touches.length > 1) return;
-      event.preventDefault();
-    },
-    { passive: false },
-  );
-}
-
-/** Whether `node` sits inside something that can actually scroll right now. */
-function hasScrollableAncestor(node: Element | null): boolean {
-  for (let el = node; el && el !== document.documentElement; el = el.parentElement) {
-    const style = getComputedStyle(el);
-    if (/(auto|scroll)/.test(style.overflowY) && el.scrollHeight > el.clientHeight) return true;
-    if (/(auto|scroll)/.test(style.overflowX) && el.scrollWidth > el.clientWidth) return true;
-  }
-  return false;
 }

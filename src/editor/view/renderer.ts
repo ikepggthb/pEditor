@@ -21,8 +21,10 @@ export interface RenderInput {
   showLineNumbers: boolean;
 }
 
-/** Rows rendered above and below the viewport, so a flick doesn't show blanks. */
-const OVERSCAN = 6;
+/** Rows that must be painted beyond the viewport before a repaint is forced. */
+const VIEW_MARGIN = 2;
+/** Rows painted beyond that, giving a flick room to run without touching DOM. */
+const OVERSCAN = 24;
 
 function escapeHtml(text: string): string {
   let out = '';
@@ -62,6 +64,12 @@ export class Renderer {
   private pool: HTMLDivElement[] = [];
   private gutterPool: HTMLDivElement[] = [];
   private lastGutterWidth = -1;
+  /** Last written value per element+property, to skip no-op style writes. */
+  private styleCache = new WeakMap<HTMLElement, Map<string, string>>();
+  /** The band of lines currently in the DOM. */
+  private painted = { first: 0, last: -1, state: '' };
+  private activeLine = -1;
+  private lastCaretTransform = '';
 
   private readonly metrics: Metrics;
 
@@ -90,35 +98,77 @@ export class Renderer {
     return Math.round((digits + 2) * this.metrics.charWidth);
   }
 
+  /** Write a style only when it changed; every write costs a style recalc. */
+  private setStyle(node: HTMLElement, property: string, value: string): void {
+    if (this.styleCache.get(node)?.get(property) === value) return;
+    let forNode = this.styleCache.get(node);
+    if (!forNode) {
+      forNode = new Map();
+      this.styleCache.set(node, forNode);
+    }
+    forNode.set(property, value);
+    if (property.startsWith('--')) node.style.setProperty(property, value);
+    else node.style.setProperty(property, value);
+  }
+
   render(input: RenderInput): void {
     const { buffer, layout } = input;
     const metrics = this.metrics;
     const lineHeight = metrics.lineHeight;
     const totalRows = layout.totalRows;
 
+    // Read scroll geometry before writing any style, so the read cannot force
+    // a synchronous layout to resolve pending writes.
+    const scrollLeft = this.scroller.scrollLeft;
+
     const gutterW = this.gutterWidth(buffer.lineCount, input.showLineNumbers);
     if (gutterW !== this.lastGutterWidth) {
       this.editor.style.setProperty('--pe-gutter-w', `${gutterW}px`);
       this.lastGutterWidth = gutterW;
     }
-    this.editor.style.setProperty('--pe-line-h', `${lineHeight}px`);
-    this.editor.style.setProperty('--pe-char-w', `${metrics.charWidth}px`);
+    // Custom properties inherit, so re-setting one invalidates style for the
+    // whole subtree — not something to do on every scroll frame.
+    this.setStyle(this.editor, '--pe-line-h', `${lineHeight}px`);
+    this.setStyle(this.editor, '--pe-char-w', `${metrics.charWidth}px`);
+
+    // The gutter lives inside the scrolled content, so vertical scrolling is
+    // free; only the horizontal offset (no-wrap mode) has to be cancelled out.
+    this.setStyle(this.gutter, 'transform', scrollLeft ? `translateX(${scrollLeft}px)` : 'none');
 
     // Leave a screen of slack under the last line so the final lines can be
     // scrolled clear of the on-screen keyboard.
     const slack = Math.max(lineHeight * 3, input.viewportHeight * 0.5);
-    this.sizer.style.height = `${totalRows * lineHeight + slack}px`;
-    this.sizer.style.width = layout.options.wordWrap
-      ? '100%'
-      : `${gutterW + (layout.widestLineColumns + 4) * metrics.charWidth}px`;
+    this.setStyle(this.sizer, 'height', `${totalRows * lineHeight + slack}px`);
+    this.setStyle(
+      this.sizer,
+      'width',
+      layout.options.wordWrap ? '100%' : `${gutterW + (layout.widestLineColumns + 4) * metrics.charWidth}px`,
+    );
 
-    const firstRow = Math.max(0, Math.floor(input.scrollTop / lineHeight) - OVERSCAN);
-    const lastRow = Math.min(totalRows, Math.ceil((input.scrollTop + input.viewportHeight) / lineHeight) + OVERSCAN);
-    const firstLine = layout.lineAtRow(firstRow).line;
-    const lastLine = layout.lineAtRow(Math.max(firstRow, lastRow - 1)).line;
+    // Two ranges: what must be on screen, and the wider band actually painted.
+    // Scrolling within the painted band touches no DOM at all, so a flick runs
+    // entirely on the compositor until it leaves the band.
+    const topRow = Math.floor(input.scrollTop / lineHeight);
+    const bottomRow = Math.ceil((input.scrollTop + input.viewportHeight) / lineHeight);
+    const neededFirst = layout.lineAtRow(Math.max(0, topRow - VIEW_MARGIN)).line;
+    const neededLast = layout.lineAtRow(Math.min(totalRows, bottomRow + VIEW_MARGIN)).line;
 
-    this.renderLines(input, firstLine, lastLine);
-    this.renderGutter(input, firstLine, lastLine, gutterW);
+    const state = `${layout.generation}:${buffer.version}:${input.showLineNumbers}`;
+    const covered =
+      state === this.painted.state && neededFirst >= this.painted.first && neededLast <= this.painted.last;
+
+    let firstLine = this.painted.first;
+    let lastLine = this.painted.last;
+    if (!covered) {
+      firstLine = layout.lineAtRow(Math.max(0, topRow - OVERSCAN)).line;
+      lastLine = layout.lineAtRow(Math.min(totalRows, bottomRow + OVERSCAN)).line;
+      this.renderLines(input, firstLine, lastLine);
+      this.renderGutter(input, firstLine, lastLine, gutterW);
+      this.painted = { first: firstLine, last: lastLine, state };
+    }
+
+    // These depend on the caret, not on the scroll position, and are cheap.
+    this.updateActiveLine(input);
     this.renderSelection(input, firstLine, lastLine);
     this.renderCaret(input);
   }
@@ -126,13 +176,12 @@ export class Renderer {
   private renderLines(input: RenderInput, firstLine: number, lastLine: number): void {
     const { buffer, layout, highlighter } = input;
     const lineHeight = this.metrics.lineHeight;
-    const cursorLine = input.selection.head.line;
-    const showActive = selectionIsEmpty(input.selection);
 
     for (const [line, node] of this.lineElements) {
       if (line < firstLine || line > lastLine) {
         node.remove();
         this.lineElements.delete(line);
+        this.styleCache.delete(node);
         if (this.pool.length < 80) this.pool.push(node);
       }
     }
@@ -149,6 +198,8 @@ export class Renderer {
       const key = `${layout.generation}:${buffer.version}:${line}`;
       if (!node) {
         node = this.pool.pop() ?? el('div', 'pe-line');
+        this.styleCache.delete(node);
+        node.classList.remove('pe-line-active');
         this.linesLayer.appendChild(node);
         this.lineElements.set(line, node);
       }
@@ -158,10 +209,24 @@ export class Renderer {
         node.dataset.key = key;
       }
 
-      node.style.top = `${top}px`;
-      node.style.height = `${height}px`;
-      node.classList.toggle('pe-line-active', showActive && line === cursorLine);
+      this.setStyle(node, 'top', `${top}px`);
+      this.setStyle(node, 'height', `${height}px`);
     }
+    // Same as the gutter: a line element created just now still needs the
+    // active-line class that `updateActiveLine` would otherwise have set.
+    this.lineElements.get(this.activeLine)?.classList.add('pe-line-active');
+  }
+
+  /** Move the current-line highlight without repainting any line content. */
+  private updateActiveLine(input: RenderInput): void {
+    const line = selectionIsEmpty(input.selection) ? input.selection.head.line : -1;
+    if (line === this.activeLine) return;
+
+    this.lineElements.get(this.activeLine)?.classList.remove('pe-line-active');
+    this.lineElements.get(line)?.classList.add('pe-line-active');
+    this.gutterElements.get(this.activeLine)?.classList.remove('pe-gutter-current');
+    this.gutterElements.get(line)?.classList.add('pe-gutter-current');
+    this.activeLine = line;
   }
 
   private lineHtml(text: string, layout: LineLayout, tokens: Token[]): string {
@@ -249,17 +314,14 @@ export class Renderer {
   }
 
   private renderGutter(input: RenderInput, firstLine: number, lastLine: number, width: number): void {
-    this.gutter.style.width = `${width}px`;
-    // The gutter lives inside the scrolled content so vertical scrolling is
-    // free; only the horizontal offset (no-wrap mode) has to be cancelled out.
-    const scrollLeft = this.scroller.scrollLeft;
-    this.gutter.style.transform = scrollLeft ? `translateX(${scrollLeft}px)` : '';
+    this.setStyle(this.gutter, 'width', `${width}px`);
     this.gutter.classList.toggle('pe-gutter-hidden', !input.showLineNumbers);
 
     for (const [line, node] of this.gutterElements) {
       if (line < firstLine || line > lastLine) {
         node.remove();
         this.gutterElements.delete(line);
+        this.styleCache.delete(node);
         if (this.gutterPool.length < 80) this.gutterPool.push(node);
       }
     }
@@ -267,19 +329,22 @@ export class Renderer {
     if (!input.showLineNumbers) return;
 
     const lineHeight = this.metrics.lineHeight;
-    const cursorLine = input.selection.head.line;
     for (let line = firstLine; line <= lastLine; line++) {
       let node = this.gutterElements.get(line);
       if (!node) {
         node = this.gutterPool.pop() ?? el('div', 'pe-gutter-line');
+        this.styleCache.delete(node);
+        node.classList.remove('pe-gutter-current');
         this.gutter.appendChild(node);
         this.gutterElements.set(line, node);
       }
       const label = String(line + 1);
       if (node.textContent !== label) node.textContent = label;
-      node.style.top = `${input.layout.firstRowOfLine(line) * lineHeight}px`;
-      node.classList.toggle('pe-gutter-current', line === cursorLine);
+      this.setStyle(node, 'top', `${input.layout.firstRowOfLine(line) * lineHeight}px`);
     }
+    // The active-line class is owned by `updateActiveLine`; re-apply it here
+    // because the element for that line may have just been created.
+    this.gutterElements.get(this.activeLine)?.classList.add('pe-gutter-current');
   }
 
   private renderSelection(input: RenderInput, firstLine: number, lastLine: number): void {
@@ -332,10 +397,18 @@ export class Renderer {
   private renderCaret(input: RenderInput): void {
     const visible = input.focused && selectionIsEmpty(input.selection);
     this.caret.classList.toggle('pe-caret-visible', visible);
+    this.setStyle(this.caret, 'height', `${this.metrics.lineHeight}px`);
+
     const coords = input.layout.coordsAt(input.selection.head);
-    this.caret.style.transform = `translate(${coords.x.toFixed(2)}px, ${coords.y.toFixed(2)}px)`;
-    this.caret.style.height = `${this.metrics.lineHeight}px`;
-    // Restart the blink so the caret is solid right after it moves.
+    const transform = `translate(${coords.x.toFixed(2)}px, ${coords.y.toFixed(2)}px)`;
+    if (transform === this.lastCaretTransform) return;
+    this.lastCaretTransform = transform;
+    this.caret.style.transform = transform;
+
+    // Restart the blink so the caret is solid right after it moves. This reads
+    // `offsetWidth` to flush the class removal, which forces a synchronous
+    // layout — fine when the caret actually moved, ruinous if it ran on every
+    // scroll frame, which is why it sits behind the check above.
     this.caret.classList.remove('pe-caret-blink');
     void this.caret.offsetWidth;
     this.caret.classList.add('pe-caret-blink');
@@ -345,9 +418,13 @@ export class Renderer {
   invalidateAll(): void {
     for (const [, node] of this.lineElements) {
       node.remove();
+      this.styleCache.delete(node);
       if (this.pool.length < 80) this.pool.push(node);
     }
     this.lineElements.clear();
+    this.painted = { first: 0, last: -1, state: '' };
+    this.activeLine = -1;
+    this.lastCaretTransform = '';
   }
 
   /** Content-space coordinates for a client point (accounts for scroll + gutter). */

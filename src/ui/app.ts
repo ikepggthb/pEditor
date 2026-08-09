@@ -15,6 +15,7 @@ import { SAMPLE_FILENAME, SAMPLE_TEXT } from './sample.ts';
 type Theme = 'auto' | 'dark' | 'light';
 const THEME_KEY = 'peditor.theme.v1';
 const KEYBOARD_KEY = 'peditor.keyboard.v1';
+const KEYBOARD_HEIGHT_KEY = 'peditor.keyboardHeight.v1';
 
 /** The application shell: chrome around the editor, plus what persists. */
 export class App {
@@ -55,7 +56,11 @@ export class App {
     this.pointer = new PointerInput(this.editor, this.input, this.handles);
     this.pinch = new PinchZoom(this.editor);
     this.keybar = new KeyBar(this.editor, this.input, () => this.setKeyboardMode('custom'));
-    this.keyboard = new CodeKeyboard(this.editor, () => this.setKeyboardMode('system'));
+    this.keyboard = new CodeKeyboard(this.editor, {
+      onSystemKeyboard: () => this.setKeyboardMode('system'),
+      onHeightChange: (height) => localStorage.setItem(KEYBOARD_HEIGHT_KEY, String(height)),
+      initialHeight: Number(localStorage.getItem(KEYBOARD_HEIGHT_KEY)) || undefined,
+    });
 
     this.nameField = h('input', {
       class: 'topbar-name',

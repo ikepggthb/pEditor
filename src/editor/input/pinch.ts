@@ -62,6 +62,10 @@ export class PinchZoom {
         position: this.editor.positionAtClient(centre.x, centre.y),
         clientY: centre.y,
       };
+      // Attached only for the duration of the pinch. A permanently registered
+      // non-passive `touchmove` would make every one-finger scroll wait on
+      // JavaScript, and single-finger scrolling is the common case by far.
+      scroller.addEventListener('touchmove', onTouchMove, { passive: false });
     };
 
     const onTouchMove = (event: TouchEvent) => {
@@ -89,13 +93,13 @@ export class PinchZoom {
     const onTouchEnd = (event: TouchEvent) => {
       if (event.touches.length >= 2) return;
       this.anchor = null;
+      scroller.removeEventListener('touchmove', onTouchMove);
     };
 
     // Safari's own pinch-zoom arrives as these, separately from touch events.
     const preventGesture = (event: Event) => event.preventDefault();
 
     scroller.addEventListener('touchstart', onTouchStart, { passive: false });
-    scroller.addEventListener('touchmove', onTouchMove, { passive: false });
     scroller.addEventListener('touchend', onTouchEnd);
     scroller.addEventListener('touchcancel', onTouchEnd);
     for (const type of ['gesturestart', 'gesturechange', 'gestureend']) {
