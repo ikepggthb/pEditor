@@ -37,11 +37,13 @@ jobs:
       # without installing it.
       - run: npm run build:single
 
+      # Requires Pages to be switched on once, by hand:
+      #   Settings → Pages → Build and deployment → Source: GitHub Actions
+      # The workflow's own token cannot do it (creating a Pages site needs
+      # repository-administration rights, which GITHUB_TOKEN is not granted),
+      # so `enablement: true` fails with "Resource not accessible by
+      # integration" rather than helping.
       - uses: actions/configure-pages@v5
-        with:
-          # Turns Pages on for the repository if it is not enabled yet, so this
-          # works without a visit to the repository settings.
-          enablement: true
 
       - uses: actions/upload-pages-artifact@v3
         with:

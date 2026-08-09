@@ -21,6 +21,19 @@ npm run icons      # public/icons/*.png を再生成
 
 `dist/` は静的ファイルだけなので、任意の静的ホスティングにそのまま置けます。
 
+## デプロイ
+
+`.github/workflows/pages.yml` が push のたびに型チェック・テスト・ビルドを走らせ、GitHub Pages に公開します。
+
+**初回だけ手動設定が必要です** — リポジトリの **Settings → Pages → Build and deployment → Source** を **GitHub Actions** に変更してください。ワークフローのトークンには Pages サイトを新規作成する権限がない（`GITHUB_TOKEN` にリポジトリ管理権限が付与されないため）ので、ここだけは自動化できません。設定後、Actions タブから最新のワークフローを Re-run すれば公開されます。
+
+公開先:
+
+| URL | 内容 |
+| --- | --- |
+| `/` | PWA 本体。ホーム画面に追加でき、オフラインでも動きます |
+| `/peditor.html` | 全部入りの HTML 1 枚（`npm run build:single`）。保存してそのまま開けます |
+
 ## スマホで書くために解いた問題
 
 エディタの難しさはテキスト編集そのものより、**スマホ特有の制約**にあります。実装の重心もそこに置いています。
