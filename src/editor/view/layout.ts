@@ -42,8 +42,9 @@ function canBreakAfter(text: string, index: number, cp: number): boolean {
  */
 export class Layout {
   private cache: (LineLayout | undefined)[] = [];
-  /** Rows per document line; parallel to `cache`, filled as lines are laid out. */
-  private rows: number[] = [];
+  /** Rows per document line; parallel to `cache`, filled as lines are laid out.
+   *  `undefined` marks a line whose layout has not been computed yet. */
+  private rows: (number | undefined)[] = [];
   private cumulative: Int32Array = new Int32Array(1);
   private cumulativeDirty = true;
   private wrapColumns = 80;
@@ -98,7 +99,10 @@ export class Layout {
   linesChanged(start: number, removed: number, added: number): void {
     const blanks = new Array<LineLayout | undefined>(added).fill(undefined);
     this.cache.splice(start, removed, ...blanks);
-    this.rows.splice(start, removed, ...new Array<number>(added).fill(1));
+    // Row counts for the new lines are unknown, not 1 — a placeholder here
+    // would be taken at face value by `ensureCumulative` and misplace every
+    // line below an edit that changed how many rows it wraps to.
+    this.rows.splice(start, removed, ...new Array<number | undefined>(added).fill(undefined));
     this.cumulativeDirty = true;
   }
 
@@ -223,8 +227,14 @@ export class Layout {
         // the document, and retaining a column map for each would cost tens of
         // megabytes on a large file to answer a question about row counts.
         // Lines that are actually drawn get cached by `lineLayout`.
-        rows = (this.cache[i] ?? this.computeLine(this.buffer.line(i))).rowStarts.length;
+        const info = this.cache[i] ?? this.computeLine(this.buffer.line(i));
+        rows = info.rowStarts.length;
         this.rows[i] = rows;
+        // The widest line has to come from the whole document, not just the
+        // lines that happen to be on screen — it is what sets the scrollable
+        // width when wrapping is off, and a long line further down would
+        // otherwise be unreachable.
+        if (info.width > this.widestColumns) this.widestColumns = info.width;
       }
       total += rows;
     }

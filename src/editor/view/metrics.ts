@@ -22,9 +22,19 @@ export class Metrics {
 
     const style = getComputedStyle(probe);
     const parsed = parseFloat(style.lineHeight);
-    const height = Number.isFinite(parsed) && parsed > 0 ? parsed : rect.height;
+    const raw = Number.isFinite(parsed) && parsed > 0 ? parsed : rect.height;
 
-    const changed = Math.abs(width - this.charWidth) > 0.01 || Math.abs(height - this.lineHeight) > 0.01;
+    // Rounded to whole pixels so every line lands on a device pixel boundary.
+    // At a fractional line height the rows sit at 67.5px, 90px, 112.5px… and
+    // text on a half-pixel has to be re-rasterised as it scrolls instead of
+    // being moved by the compositor — which is what a stuttering flick is.
+    const height = Math.max(1, Math.round(raw));
+
+    // The character width is deliberately *not* rounded: it is the font's real
+    // advance, and the layout uses it to place tabs and wide glyphs. Rounding
+    // would make our arithmetic drift from what the browser paints, a little
+    // more with every character on the line.
+    const changed = Math.abs(width - this.charWidth) > 0.01 || height !== this.lineHeight;
     this.charWidth = width;
     this.lineHeight = height;
     return changed;

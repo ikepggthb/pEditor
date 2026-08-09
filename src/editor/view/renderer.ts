@@ -70,6 +70,7 @@ export class Renderer {
   private painted = { first: 0, last: -1, state: '' };
   private activeLine = -1;
   private lastCaretTransform = '';
+  private lastScrollLeft = 0;
 
   private readonly metrics: Metrics;
 
@@ -89,6 +90,33 @@ export class Renderer {
     this.sizer.append(this.gutter, this.content);
     this.scroller.append(this.sizer);
     this.editor.append(this.scroller, this.measureProbe);
+  }
+
+  /**
+   * Whether scrolling to this offset would change anything on screen.
+   *
+   * When it would not — the common case mid-flick, because the painted band
+   * extends well past the viewport — the caller can skip the render entirely
+   * and leave the frame to the compositor.
+   */
+  scrollNeedsRepaint(input: Omit<RenderInput, 'selection' | 'composition' | 'focused'>): boolean {
+    if (this.scroller.scrollLeft !== this.lastScrollLeft) return true;
+
+    const lineHeight = this.metrics.lineHeight;
+    const topRow = Math.floor(input.scrollTop / lineHeight);
+    const bottomRow = Math.ceil((input.scrollTop + input.viewportHeight) / lineHeight);
+    const totalRows = input.layout.totalRows;
+    const first = input.layout.lineAtRow(Math.max(0, topRow - VIEW_MARGIN)).line;
+    const last = input.layout.lineAtRow(Math.min(totalRows, bottomRow + VIEW_MARGIN)).line;
+    return !(
+      this.paintedState(input) === this.painted.state &&
+      first >= this.painted.first &&
+      last <= this.painted.last
+    );
+  }
+
+  private paintedState(input: { layout: Layout; buffer: TextBuffer; showLineNumbers: boolean }): string {
+    return `${input.layout.generation}:${input.buffer.version}:${input.showLineNumbers}`;
   }
 
   /** Width reserved for the line-number gutter, in pixels. */
@@ -120,6 +148,7 @@ export class Renderer {
     // Read scroll geometry before writing any style, so the read cannot force
     // a synchronous layout to resolve pending writes.
     const scrollLeft = this.scroller.scrollLeft;
+    this.lastScrollLeft = scrollLeft;
 
     const gutterW = this.gutterWidth(buffer.lineCount, input.showLineNumbers);
     if (gutterW !== this.lastGutterWidth) {
@@ -153,7 +182,7 @@ export class Renderer {
     const neededFirst = layout.lineAtRow(Math.max(0, topRow - VIEW_MARGIN)).line;
     const neededLast = layout.lineAtRow(Math.min(totalRows, bottomRow + VIEW_MARGIN)).line;
 
-    const state = `${layout.generation}:${buffer.version}:${input.showLineNumbers}`;
+    const state = this.paintedState(input);
     const covered =
       state === this.painted.state && neededFirst >= this.painted.first && neededLast <= this.painted.last;
 
@@ -310,7 +339,10 @@ export class Renderer {
       i = j;
     }
 
-    return `<span class="tk-${type}">${out}</span>`;
+    // Unstyled runs — whitespace, punctuation the language did not classify —
+    // need no element of their own. Skipping them takes a visible bite out of
+    // the node count, and nodes are what scrolling has to paint.
+    return type === 'text' ? out : `<span class="tk-${type}">${out}</span>`;
   }
 
   private renderGutter(input: RenderInput, firstLine: number, lastLine: number, width: number): void {

@@ -107,6 +107,8 @@
 
 .pe-row {
   height: var(--pe-line-h);
+  /* Matches the measured, whole-pixel line height rather than the 1.5 factor
+     it was derived from, so rows stay on device pixel boundaries. */
   line-height: var(--pe-line-h);
   white-space: pre;
 }

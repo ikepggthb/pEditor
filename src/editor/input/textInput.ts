@@ -221,6 +221,11 @@ export class TextInput {
    * instead of under what you are typing.
    */
   syncPosition(): void {
+    // Only worth doing for the element an IME is actually attached to. In
+    // custom-keyboard mode, or while the textarea does not hold focus, there
+    // is no candidate window to place and this runs on every scroll event.
+    if (this.mode === 'custom' || document.activeElement !== this.textarea) return;
+
     const host = this.editor.renderer.editor;
     const hostRect = host.getBoundingClientRect();
     const caret = this.editor.caretClientRect();

@@ -172,6 +172,11 @@ export class SelectionHandles {
   }
 
   update(): void {
+    // Hidden handles still received a scroll-driven reposition, which meant
+    // several `getBoundingClientRect` reads per scroll event for something
+    // nobody could see. They spend most of their life hidden.
+    if (!this.layer.classList.contains('pe-handles-visible')) return;
+
     const editor = this.editor;
     const hostRect = editor.renderer.editor.getBoundingClientRect();
     const scrollRect = editor.renderer.scroller.getBoundingClientRect();

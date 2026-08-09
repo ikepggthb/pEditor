@@ -72,6 +72,9 @@ export class Editor {
   private focused = false;
   /** Column the caret aims for while moving vertically through short lines. */
   private goalColumn: number | null = null;
+  /** Cached scroller height. Reading it during a scroll would be a layout read
+   *  on the hot path; the ResizeObserver keeps this fresh instead. */
+  private viewportHeight = 0;
   private resizeObserver: ResizeObserver | null = null;
 
   constructor(text = '', config: Partial<EditorConfig> = {}) {
@@ -109,13 +112,26 @@ export class Editor {
   }
 
   private onScroll = (): void => {
-    this.scheduleRender();
+    // Most scroll frames change nothing: the painted band of lines already
+    // covers where we are heading. Skipping the render keeps the whole frame
+    // on the compositor instead of waiting on script.
+    const scroller = this.renderer.scroller;
+    const needsRepaint = this.renderer.scrollNeedsRepaint({
+      buffer: this.buffer,
+      layout: this.layout,
+      highlighter: this.highlighter,
+      scrollTop: scroller.scrollTop,
+      viewportHeight: this.viewportHeight,
+      showLineNumbers: this.config.lineNumbers,
+    });
+    if (needsRepaint) this.scheduleRender();
     this.emit('scroll');
   };
 
   /** Re-read the character cell size and the available width. */
   measure(): void {
     const metricsChanged = this.metrics.measure(this.renderer.measureProbe);
+    this.viewportHeight = this.renderer.scroller.clientHeight;
     const gutter = this.renderer.gutterWidth(this.buffer.lineCount, this.config.lineNumbers);
     const width = Math.max(80, this.renderer.scroller.clientWidth - gutter - 4);
     this.layout.setViewportWidth(width);
@@ -172,7 +188,7 @@ export class Editor {
       selection: this.sel,
       composition: this.composing,
       scrollTop: this.renderer.scroller.scrollTop,
-      viewportHeight: this.renderer.scroller.clientHeight,
+      viewportHeight: this.viewportHeight,
       focused: this.focused,
       showLineNumbers: this.config.lineNumbers,
     });
