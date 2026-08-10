@@ -75,6 +75,8 @@ export class Editor {
   /** Cached scroller height. Reading it during a scroll would be a layout read
    *  on the hot path; the ResizeObserver keeps this fresh instead. */
   private viewportHeight = 0;
+  /** Width at the last full re-measure; a height-only change can skip it. */
+  private lastMeasuredWidth = -1;
   private resizeObserver: ResizeObserver | null = null;
 
   constructor(text = '', config: Partial<EditorConfig> = {}) {
@@ -99,10 +101,11 @@ export class Editor {
     this.resizeObserver = new ResizeObserver(() => this.measure());
     this.resizeObserver.observe(this.renderer.scroller);
 
-    // Web fonts land after first paint; remeasure so the cell grid is right.
-    if (document.fonts?.ready) void document.fonts.ready.then(() => this.measure());
+    // Web fonts land after first paint and change the cell, so this one has to
+    // re-measure even though the width has not moved.
+    if (document.fonts?.ready) void document.fonts.ready.then(() => this.measure({ force: true }));
 
-    this.measure();
+    this.measure({ force: true });
   }
 
   destroy(): void {
@@ -128,13 +131,29 @@ export class Editor {
     this.emit('scroll');
   };
 
-  /** Re-read the character cell size and the available width. */
-  measure(): void {
+  /**
+   * Re-read the character cell size and the available width.
+   *
+   * Height changes are common and cheap to ignore: the address bar sliding
+   * away during a scroll, or the keyboard opening, both resize the editor
+   * without touching the character cell or the wrap column. Re-measuring costs
+   * a forced synchronous layout, so it is skipped unless the width moved or
+   * the caller knows the font did.
+   */
+  measure(options: { force?: boolean } = {}): void {
+    const scroller = this.renderer.scroller;
+    const clientWidth = scroller.clientWidth;
+    this.viewportHeight = scroller.clientHeight;
+
+    if (!options.force && clientWidth === this.lastMeasuredWidth) {
+      this.scheduleRender();
+      return;
+    }
+    this.lastMeasuredWidth = clientWidth;
+
     const metricsChanged = this.metrics.measure(this.renderer.measureProbe);
-    this.viewportHeight = this.renderer.scroller.clientHeight;
     const gutter = this.renderer.gutterWidth(this.buffer.lineCount, this.config.lineNumbers);
-    const width = Math.max(80, this.renderer.scroller.clientWidth - gutter - 4);
-    this.layout.setViewportWidth(width);
+    this.layout.setViewportWidth(Math.max(80, clientWidth - gutter - 4));
 
     if (metricsChanged) {
       this.layout.invalidateAll();
@@ -253,7 +272,7 @@ export class Editor {
     if (structural) {
       this.layout.invalidateAll();
       this.renderer.invalidateAll();
-      this.measure();
+      this.measure({ force: true });
     }
     this.scheduleRender();
     this.emit('config');

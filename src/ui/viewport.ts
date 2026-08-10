@@ -23,15 +23,36 @@ export function trackVisualViewport(root: HTMLElement): () => void {
   }
 
   let frame = 0;
+  let lastHeight = -1;
+  let lastOffsetTop = -1;
+
   const sync = () => {
     if (frame) return;
     frame = requestAnimationFrame(() => {
       frame = 0;
-      root.style.height = `${vv.height}px`;
+
+      // Rounded, and compared against the last applied value, because on
+      // Android this fires continuously while scrolling in a browser tab: the
+      // address bar slides in and out and the visual viewport follows it. Each
+      // write here resizes the app's grid and invalidates style, which in turn
+      // wakes the editor's ResizeObserver — a full re-measure per scroll frame,
+      // felt as the view refusing to keep up with your finger. Installed as a
+      // PWA there is no address bar and none of this happens, which is why it
+      // only shows up in a tab.
+      const height = Math.round(vv.height);
+      const offsetTop = Math.round(vv.offsetTop);
+      if (height === lastHeight && offsetTop === lastOffsetTop) return;
+      lastHeight = height;
+      lastOffsetTop = offsetTop;
+
+      root.style.height = `${height}px`;
       // iOS scrolls the page itself to reveal the focused field; offsetTop tells
       // us by how much, so we can push the app back into place.
-      root.style.transform = vv.offsetTop ? `translateY(${vv.offsetTop}px)` : '';
-      document.documentElement.style.setProperty('--pe-vv-height', `${vv.height}px`);
+      root.style.transform = offsetTop ? `translateY(${offsetTop}px)` : '';
+      // Set on the app rather than the document element: custom properties
+      // inherit, so writing one at the root invalidates style for every node
+      // on the page. Everything that reads it lives inside the app.
+      root.style.setProperty('--pe-vv-height', `${height}px`);
     });
   };
 
