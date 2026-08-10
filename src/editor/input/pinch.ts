@@ -53,14 +53,17 @@ export class PinchZoom {
     const scroller = this.editor.renderer.scroller;
 
     const onTouchStart = (event: TouchEvent) => {
+      // One finger is a scroll and belongs to the browser: bail out before
+      // doing anything, so the cost of this listener on the scroll path is a
+      // single length check.
       if (event.touches.length !== 2) return;
-      // Deliberately no preventDefault, and registered as passive below. A
-      // non-passive `touchstart` on the scroller forces the browser to run
-      // this handler before it may scroll at all, because the handler might
-      // cancel the gesture — which shows up as the view lagging behind your
-      // finger. Nothing is lost: `touch-action: pan-x pan-y` on the scroller
-      // already denies the browser its pinch-zoom, and Safari's own gesture
-      // events are cancelled separately.
+
+      // Two fingers make the gesture ours, and this is the only moment that
+      // claim can still be made. Without it the browser takes the gesture as a
+      // two-finger pan and simply stops delivering `touchmove` to the page —
+      // one event arrives, the text jumps one step, and nothing follows.
+      event.preventDefault();
+
       const centre = midpointOf(event.touches);
       this.anchor = {
         distance: distanceBetween(event.touches),
@@ -68,13 +71,11 @@ export class PinchZoom {
         position: this.editor.positionAtClient(centre.x, centre.y),
         clientY: centre.y,
       };
-      // Attached only for the duration of the pinch. A permanently registered
-      // non-passive `touchmove` would make every one-finger scroll wait on
-      // JavaScript, and single-finger scrolling is the common case by far.
-      scroller.addEventListener('touchmove', onTouchMove, { passive: false });
     };
 
     const onTouchMove = (event: TouchEvent) => {
+      // A one-finger drag leaves here untouched and uncancelled, so the browser
+      // scrolls it exactly as it would with no listener at all.
       if (!this.anchor || event.touches.length !== 2) return;
       event.preventDefault();
 
@@ -99,13 +100,19 @@ export class PinchZoom {
     const onTouchEnd = (event: TouchEvent) => {
       if (event.touches.length >= 2) return;
       this.anchor = null;
-      scroller.removeEventListener('touchmove', onTouchMove);
     };
 
     // Safari's own pinch-zoom arrives as these, separately from touch events.
     const preventGesture = (event: Event) => event.preventDefault();
 
-    scroller.addEventListener('touchstart', onTouchStart, { passive: true });
+    // Both `touchstart` and `touchmove` stay cancellable. An earlier attempt
+    // registered the move listener lazily, from inside `touchstart`, to keep
+    // it off the scroll path — but a listener added after a gesture has begun
+    // cannot cancel that gesture, so the browser kept the pinch as a pan and
+    // stopped delivering moves after the first one. What the browser waits for
+    // here is a length check that exits immediately for a one-finger drag.
+    scroller.addEventListener('touchstart', onTouchStart, { passive: false });
+    scroller.addEventListener('touchmove', onTouchMove, { passive: false });
     scroller.addEventListener('touchend', onTouchEnd, { passive: true });
     scroller.addEventListener('touchcancel', onTouchEnd, { passive: true });
     for (const type of ['gesturestart', 'gesturechange', 'gestureend']) {

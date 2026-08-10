@@ -92,16 +92,12 @@ src/ui/
 
 スクロールはコンポジタの仕事で、JavaScript が割り込むほど遅くなります。そこで:
 
-- **スクロール対象に非 passive なタッチリスナーを1つも置かない**。`touchmove` だけでなく **`touchstart` も**です。非 passive なリスナーは `preventDefault()` を呼ぶ可能性があるため、ブラウザは**ハンドラの実行が終わるまでスクロールを開始できません** — これが「指に追従しない」の正体でした。ページ固定は CSS（`overflow: hidden` と `overscroll-behavior`）、ピンチズームの抑止は `touch-action: pan-x pan-y` に任せ、ピンチ用の非 passive な `touchmove` は2本指を検出した瞬間にだけ登録します
+- **タッチリスナーは可能な限り passive にし、非 passive なものは即座に抜ける**。非 passive なリスナーは `preventDefault()` を呼びうるため、ブラウザはハンドラの完了を待ってからでないとスクロールを開始できません。ただし**ピンチには非 passive が不可欠**です:
 
-  この不変条件は Chrome DevTools Protocol の `DOMDebugger.getEventListeners` で検査できます:
-
-  ```
-  .pe-scroller:
-     touchstart   passive
-     touchmove    (ピンチ中のみ)
-     pointer*     passive
-  ```
+  - `touchstart` / `touchmove` は非 passive。ただし1本指のときは指の本数を見て即 `return` し、**cancel しません**（＝ブラウザは通常どおりスクロールします）
+  - 2本指の `touchstart` で `preventDefault()` し、ジェスチャを自分のものとして宣言します。**これを怠るとブラウザはピンチを2本指パンとして扱い、最初の1回以降 `touchmove` をページに配信しなくなります** — 画面上は「1度カクっと拡大して、あとは動かない」に見えます
+  - リスナーを `touchstart` の中から遅延登録するのも同じ理由で不可です。**すでに始まったジェスチャは、後から追加したリスナーでは cancel できません**
+  - pointer 系はどれも cancel しないので passive です
 - **可視範囲より広い帯を描いておき**、その中を動いている間はレンダリング自体を呼びません。スクロールイベントで走るのは「帯を出たか」の判定だけです
 - **同じ値の style は書きません**。CSS カスタムプロパティは継承するので、1回書くだけでサブツリー全体のスタイルが無効化されます
 - キャレットの点滅リセットは `offsetWidth` を読んで強制レイアウトを起こすので、**キャレットが実際に動いた時だけ**実行します
