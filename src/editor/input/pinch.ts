@@ -5,11 +5,15 @@ const MIN_FONT_SIZE = 9;
 const MAX_FONT_SIZE = 32;
 
 interface Anchor {
+  /** Finger separation when the gesture began. */
   distance: number;
   fontSize: number;
-  /** The document position under the pinch centre when the gesture began. */
+  /** Pinch centre in the sizer's own coordinates, for `transform-origin`. */
+  originX: number;
+  originY: number;
+  /** The document position under the pinch centre, and where it sat on screen. */
   position: Position;
-  /** Where that position sat on screen, so it can be kept there. */
+  clientX: number;
   clientY: number;
 }
 
@@ -29,20 +33,28 @@ function midpointOf(touches: TouchList): { x: number; y: number } {
 /**
  * Pinch to resize the text.
  *
- * A phone's default response to a pinch is to zoom the page, which scales the
- * chrome along with the code and leaves the layout wider than the screen. Here
- * the gesture changes the editor's font size instead: the character cell grows,
- * and because every measurement in the view derives from that cell, the gutter,
- * line spacing and wrap width all follow from the same number.
+ * The gesture has two halves, and getting the split right is the whole point.
  *
- * `user-scalable=no` is not enough on its own — iOS Safari has ignored it since
- * iOS 10 — so the page-level gesture is cancelled explicitly.
+ * While the fingers are down, the editor's contents are scaled with a CSS
+ * `transform`. That is a compositor property: it costs no layout, no restyle
+ * and no repaint, so the text tracks the fingers exactly the way the browser's
+ * own page zoom does. An earlier version instead recomputed the font size on
+ * every move — but a font size is a whole number of pixels, so the text could
+ * only jump between discrete steps, each one re-wrapping the document. No
+ * amount of optimisation makes that feel continuous; it was the wrong
+ * mechanism, not a slow one.
+ *
+ * When the fingers lift, the scale is folded into a real font size and the
+ * document is laid out again for real. The blur of scaled-up text sharpens at
+ * that moment, which is the same trade every map and PDF viewer makes.
+ *
+ * Only the editor's contents scale — the toolbar, status bar and keyboard keep
+ * their size, which is what page zoom cannot do.
  */
 export class PinchZoom {
   private readonly editor: Editor;
   private anchor: Anchor | null = null;
-  private pendingSize: number | null = null;
-  private frame = 0;
+  private scale = 1;
   private disposers: (() => void)[] = [];
 
   constructor(editor: Editor) {
@@ -51,70 +63,88 @@ export class PinchZoom {
 
   attach(): void {
     const scroller = this.editor.renderer.scroller;
+    const sizer = this.editor.renderer.sizer;
 
     const onTouchStart = (event: TouchEvent) => {
-      // One finger is a scroll and belongs to the browser: bail out before
-      // doing anything, so the cost of this listener on the scroll path is a
-      // single length check.
+      // One finger is a scroll and belongs to the browser: leave immediately,
+      // and above all do not cancel it.
       if (event.touches.length !== 2) return;
 
-      // Two fingers make the gesture ours, and this is the only moment that
-      // claim can still be made. Without it the browser takes the gesture as a
-      // two-finger pan and simply stops delivering `touchmove` to the page —
-      // one event arrives, the text jumps one step, and nothing follows.
+      // Two fingers make the gesture ours. Without this the browser treats it
+      // as a two-finger pan and stops delivering moves after the first one.
       event.preventDefault();
 
       const centre = midpointOf(event.touches);
+      const sizerRect = sizer.getBoundingClientRect();
       this.anchor = {
         distance: distanceBetween(event.touches),
         fontSize: this.editor.config.fontSize,
+        originX: centre.x - sizerRect.left,
+        originY: centre.y - sizerRect.top,
         position: this.editor.positionAtClient(centre.x, centre.y),
+        clientX: centre.x,
         clientY: centre.y,
       };
+      this.scale = 1;
+
+      sizer.style.transformOrigin = `${this.anchor.originX}px ${this.anchor.originY}px`;
+      sizer.style.willChange = 'transform';
     };
 
     const onTouchMove = (event: TouchEvent) => {
-      // A one-finger drag leaves here untouched and uncancelled, so the browser
-      // scrolls it exactly as it would with no listener at all.
-      if (!this.anchor || event.touches.length !== 2) return;
+      const anchor = this.anchor;
+      if (!anchor || event.touches.length !== 2) return;
       event.preventDefault();
 
-      const scale = distanceBetween(event.touches) / this.anchor.distance;
-      // Whole pixels: the re-layout is not free, and a half-pixel of type size
-      // is not a difference anyone is pinching for.
-      const next = Math.round(
-        Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, this.anchor.fontSize * scale)),
-      );
-      if (next === this.editor.config.fontSize) return;
+      // Clamped in scale space so the gesture stops at the same place the font
+      // size would, instead of scaling past it and snapping back on release.
+      const raw = distanceBetween(event.touches) / anchor.distance;
+      const min = MIN_FONT_SIZE / anchor.fontSize;
+      const max = MAX_FONT_SIZE / anchor.fontSize;
+      this.scale = Math.max(min, Math.min(max, raw));
 
-      this.pendingSize = next;
-      if (this.frame) return;
-      this.frame = requestAnimationFrame(() => {
-        this.frame = 0;
-        const size = this.pendingSize;
-        this.pendingSize = null;
-        if (size !== null) this.applyFontSize(size);
-      });
+      // The only write in the whole gesture, and one the compositor can apply
+      // without touching layout.
+      sizer.style.transform = `scale(${this.scale})`;
     };
 
     const onTouchEnd = (event: TouchEvent) => {
-      if (event.touches.length >= 2) return;
+      const anchor = this.anchor;
+      if (!anchor || event.touches.length >= 2) return;
+
+      const scale = this.scale;
       this.anchor = null;
+      this.scale = 1;
+      sizer.style.transform = '';
+      sizer.style.transformOrigin = '';
+      sizer.style.willChange = '';
+
+      const next = Math.round(anchor.fontSize * scale);
+      if (next === this.editor.config.fontSize) return;
+
+      // Now do it properly: a real font size, a real re-layout, sharp text.
+      this.editor.setConfig({ fontSize: next });
+
+      // Keep the line that was between the fingers between the fingers.
+      const coords = this.editor.layout.coordsAt(anchor.position);
+      const rect = scroller.getBoundingClientRect();
+      scroller.scrollTop = Math.max(0, coords.y - (anchor.clientY - rect.top));
+      if (!this.editor.config.wordWrap) {
+        const gutter = this.editor.renderer.gutterWidth(
+          this.editor.buffer.lineCount,
+          this.editor.config.lineNumbers,
+        );
+        scroller.scrollLeft = Math.max(0, coords.x + gutter - (anchor.clientX - rect.left));
+      }
     };
 
     // Safari's own pinch-zoom arrives as these, separately from touch events.
     const preventGesture = (event: Event) => event.preventDefault();
 
-    // Both `touchstart` and `touchmove` stay cancellable. An earlier attempt
-    // registered the move listener lazily, from inside `touchstart`, to keep
-    // it off the scroll path — but a listener added after a gesture has begun
-    // cannot cancel that gesture, so the browser kept the pinch as a pan and
-    // stopped delivering moves after the first one. What the browser waits for
-    // here is a length check that exits immediately for a one-finger drag.
     scroller.addEventListener('touchstart', onTouchStart, { passive: false });
     scroller.addEventListener('touchmove', onTouchMove, { passive: false });
-    scroller.addEventListener('touchend', onTouchEnd, { passive: true });
-    scroller.addEventListener('touchcancel', onTouchEnd, { passive: true });
+    scroller.addEventListener('touchend', onTouchEnd);
+    scroller.addEventListener('touchcancel', onTouchEnd);
     for (const type of ['gesturestart', 'gesturechange', 'gestureend']) {
       document.addEventListener(type, preventGesture, { passive: false });
     }
@@ -131,25 +161,7 @@ export class PinchZoom {
   }
 
   detach(): void {
-    if (this.frame) cancelAnimationFrame(this.frame);
-    this.frame = 0;
     for (const dispose of this.disposers) dispose();
     this.disposers = [];
-  }
-
-  /**
-   * Resize, then scroll so the line under the fingers stays under the fingers.
-   * Without this the text slides away as it grows and the pinch feels like it
-   * is happening to some other part of the document.
-   */
-  private applyFontSize(size: number): void {
-    const anchor = this.anchor;
-    this.editor.setConfig({ fontSize: size });
-    if (!anchor) return;
-
-    const scroller = this.editor.renderer.scroller;
-    const coords = this.editor.layout.coordsAt(anchor.position);
-    const offsetInViewport = anchor.clientY - scroller.getBoundingClientRect().top;
-    scroller.scrollTop = Math.max(0, coords.y - offsetInViewport);
   }
 }
