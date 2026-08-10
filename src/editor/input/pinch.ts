@@ -54,7 +54,13 @@ export class PinchZoom {
 
     const onTouchStart = (event: TouchEvent) => {
       if (event.touches.length !== 2) return;
-      event.preventDefault();
+      // Deliberately no preventDefault, and registered as passive below. A
+      // non-passive `touchstart` on the scroller forces the browser to run
+      // this handler before it may scroll at all, because the handler might
+      // cancel the gesture — which shows up as the view lagging behind your
+      // finger. Nothing is lost: `touch-action: pan-x pan-y` on the scroller
+      // already denies the browser its pinch-zoom, and Safari's own gesture
+      // events are cancelled separately.
       const centre = midpointOf(event.touches);
       this.anchor = {
         distance: distanceBetween(event.touches),
@@ -99,9 +105,9 @@ export class PinchZoom {
     // Safari's own pinch-zoom arrives as these, separately from touch events.
     const preventGesture = (event: Event) => event.preventDefault();
 
-    scroller.addEventListener('touchstart', onTouchStart, { passive: false });
-    scroller.addEventListener('touchend', onTouchEnd);
-    scroller.addEventListener('touchcancel', onTouchEnd);
+    scroller.addEventListener('touchstart', onTouchStart, { passive: true });
+    scroller.addEventListener('touchend', onTouchEnd, { passive: true });
+    scroller.addEventListener('touchcancel', onTouchEnd, { passive: true });
     for (const type of ['gesturestart', 'gesturechange', 'gestureend']) {
       document.addEventListener(type, preventGesture, { passive: false });
     }

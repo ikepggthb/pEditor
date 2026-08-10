@@ -92,7 +92,16 @@ src/ui/
 
 スクロールはコンポジタの仕事で、JavaScript が割り込むほど遅くなります。そこで:
 
-- **非 passive な `touchmove` を1つも登録しない**。1つあるだけで、ブラウザは1ピクセル動かす前に JS を待ちます。ページ固定は CSS（`overflow: hidden` と `overscroll-behavior`）に任せます。ピンチ用のリスナーは2本指を検出した瞬間だけ登録します
+- **スクロール対象に非 passive なタッチリスナーを1つも置かない**。`touchmove` だけでなく **`touchstart` も**です。非 passive なリスナーは `preventDefault()` を呼ぶ可能性があるため、ブラウザは**ハンドラの実行が終わるまでスクロールを開始できません** — これが「指に追従しない」の正体でした。ページ固定は CSS（`overflow: hidden` と `overscroll-behavior`）、ピンチズームの抑止は `touch-action: pan-x pan-y` に任せ、ピンチ用の非 passive な `touchmove` は2本指を検出した瞬間にだけ登録します
+
+  この不変条件は Chrome DevTools Protocol の `DOMDebugger.getEventListeners` で検査できます:
+
+  ```
+  .pe-scroller:
+     touchstart   passive
+     touchmove    (ピンチ中のみ)
+     pointer*     passive
+  ```
 - **可視範囲より広い帯を描いておき**、その中を動いている間はレンダリング自体を呼びません。スクロールイベントで走るのは「帯を出たか」の判定だけです
 - **同じ値の style は書きません**。CSS カスタムプロパティは継承するので、1回書くだけでサブツリー全体のスタイルが無効化されます
 - キャレットの点滅リセットは `offsetWidth` を読んで強制レイアウトを起こすので、**キャレットが実際に動いた時だけ**実行します

@@ -112,11 +112,14 @@ export class PointerInput {
      */
     const onMouseDown = (event: MouseEvent) => event.preventDefault();
 
+    // None of the pointer handlers cancel anything, so they are all passive.
+    // The browser then knows it never has to wait on them before scrolling.
+    const passive = { passive: true } as const;
     scroller.addEventListener('mousedown', onMouseDown);
-    scroller.addEventListener('pointerdown', onPointerDown);
-    scroller.addEventListener('pointermove', onPointerMove);
-    scroller.addEventListener('pointerup', onPointerUp);
-    scroller.addEventListener('pointercancel', onPointerCancel);
+    scroller.addEventListener('pointerdown', onPointerDown, passive);
+    scroller.addEventListener('pointermove', onPointerMove, passive);
+    scroller.addEventListener('pointerup', onPointerUp, passive);
+    scroller.addEventListener('pointercancel', onPointerCancel, passive);
     scroller.addEventListener('contextmenu', onContextMenu);
 
     this.disposers.push(() => {
