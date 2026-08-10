@@ -1,5 +1,6 @@
 import type { Editor } from '../core/editor.ts';
 import type { Position } from '../model/position.ts';
+import type { Cell } from '../view/metrics.ts';
 
 const MIN_FONT_SIZE = 9;
 const MAX_FONT_SIZE = 32;
@@ -8,8 +9,14 @@ interface Anchor {
   /** Finger separation when the gesture began. */
   distance: number;
   fontSize: number;
+  /** The cell at that font size, the baseline every scale is measured against. */
+  cell: Cell;
+  /** What each candidate font size measures, so the preview can match it exactly. */
+  sizes: Map<number, Cell>;
   /** Vertical pinch centre in the sizer's coordinates, for `transform-origin`. */
   originY: number;
+  /** Horizontal scroll offset, which the gutter cancels out to stay on screen. */
+  scrollLeft: number;
   /** Gutter width at the start, needed to keep the text beside it as it grows. */
   gutterWidth: number;
   /** The document position under the pinch centre, and where it sat on screen. */
@@ -45,9 +52,12 @@ function midpointOf(touches: TouchList): { x: number; y: number } {
  * amount of optimisation makes that feel continuous; it was the wrong
  * mechanism, not a slow one.
  *
- * When the fingers lift, the scale is folded into a real font size and the
- * document is laid out again for real. The blur of scaled-up text sharpens at
- * that moment, which is the same trade every map and PDF viewer makes.
+ * The scale is not the raw finger ratio, though. It is snapped to the nearest
+ * scale a font size can actually produce, measured beforehand rather than
+ * assumed: the preview therefore shows the size that will be applied, and
+ * nothing changes size when the fingers lift. Only the sharpness does, when the
+ * scale is folded into a real font size and the document is laid out again for
+ * real — the same trade every map and PDF viewer makes.
  *
  * Only the editor's contents scale — the toolbar, status bar and keyboard keep
  * their size, which is what page zoom cannot do.
@@ -55,11 +65,61 @@ function midpointOf(touches: TouchList): { x: number; y: number } {
 export class PinchZoom {
   private readonly editor: Editor;
   private anchor: Anchor | null = null;
-  private scale = 1;
+  /** Font size the current finger separation corresponds to. */
+  private size = 0;
+  private sizes: Map<number, Cell> | null = null;
+  private sizesFont = '';
   private disposers: (() => void)[] = [];
 
   constructor(editor: Editor) {
     this.editor = editor;
+  }
+
+  /**
+   * What every font size in range measures, built once and reused.
+   *
+   * Twenty-four probe measurements is more than one wants on a touch frame, so
+   * it happens when the fingers land — before anything is moving — and is kept
+   * until the font itself changes.
+   */
+  private measureSizes(): Map<number, Cell> {
+    const probe = this.editor.renderer.measureProbe;
+    const font = getComputedStyle(probe).fontFamily;
+    // A web font that finished loading changes the measurements without
+    // changing the family name, so the live cell is checked too.
+    const live = this.sizes?.get(this.editor.config.fontSize);
+    if (this.sizes && this.sizesFont === font && live && live.lineHeight === this.editor.metrics.lineHeight) {
+      return this.sizes;
+    }
+
+    const sizes = new Map<number, Cell>();
+    for (let size = MIN_FONT_SIZE; size <= MAX_FONT_SIZE; size++) {
+      const cell = this.editor.metrics.cellAt(probe, size);
+      if (cell) sizes.set(size, cell);
+    }
+    this.sizes = sizes;
+    this.sizesFont = font;
+    return sizes;
+  }
+
+  /** The font size whose line height comes closest to `scale` times the anchor's. */
+  private sizeFor(anchor: Anchor, scale: number): number {
+    const targetHeight = anchor.cell.lineHeight * scale;
+    const targetWidth = anchor.cell.charWidth * scale;
+    let best = anchor.fontSize;
+    let bestError = Infinity;
+    for (const [size, cell] of anchor.sizes) {
+      // Line height first: it is what the eye reads as "the text got bigger",
+      // and it is the coarser of the two, so it decides. Character width breaks
+      // the ties two sizes that round to the same height would otherwise leave.
+      const error =
+        Math.abs(cell.lineHeight - targetHeight) + Math.abs(cell.charWidth - targetWidth) / 1000;
+      if (error < bestError) {
+        bestError = error;
+        best = size;
+      }
+    }
+    return best;
   }
 
   attach(): void {
@@ -79,10 +139,18 @@ export class PinchZoom {
 
       const centre = midpointOf(event.touches);
       const sizerRect = sizer.getBoundingClientRect();
+      const fontSize = this.editor.config.fontSize;
+      const sizes = this.measureSizes();
       this.anchor = {
         distance: distanceBetween(event.touches),
-        fontSize: this.editor.config.fontSize,
+        fontSize,
+        cell: sizes.get(fontSize) ?? {
+          charWidth: this.editor.metrics.charWidth,
+          lineHeight: this.editor.metrics.lineHeight,
+        },
+        sizes,
         originY: centre.y - sizerRect.top,
+        scrollLeft: scroller.scrollLeft,
         gutterWidth: this.editor.renderer.gutterWidth(
           this.editor.buffer.lineCount,
           this.editor.config.lineNumbers,
@@ -91,7 +159,7 @@ export class PinchZoom {
         clientX: centre.x,
         clientY: centre.y,
       };
-      this.scale = 1;
+      this.size = fontSize;
 
       // Scaled separately, and both anchored to x = 0 rather than to the pinch
       // centre. Scaling the whole sizer about the fingers is simpler, but it
@@ -111,29 +179,37 @@ export class PinchZoom {
       if (!anchor || event.touches.length !== 2) return;
       event.preventDefault();
 
-      // Clamped in scale space so the gesture stops at the same place the font
-      // size would, instead of scaling past it and snapping back on release.
-      const raw = distanceBetween(event.touches) / anchor.distance;
-      const min = MIN_FONT_SIZE / anchor.fontSize;
-      const max = MAX_FONT_SIZE / anchor.fontSize;
-      this.scale = Math.max(min, Math.min(max, raw));
+      const size = this.sizeFor(anchor, distanceBetween(event.touches) / anchor.distance);
+      if (size === this.size) return;
+      this.size = size;
+
+      // Not the finger ratio but the ratio the chosen font size really measures,
+      // and separately per axis: the line height is rounded to whole pixels and
+      // the advance width is not, so a single number cannot describe both. Using
+      // the real ones is what makes the preview and the result the same size.
+      const cell = anchor.sizes.get(size) ?? anchor.cell;
+      const scaleX = cell.charWidth / anchor.cell.charWidth;
+      const scaleY = cell.lineHeight / anchor.cell.lineHeight;
 
       // The only writes in the whole gesture, and ones the compositor applies
-      // without touching layout. The text is pushed right by the gutter's
+      // without touching layout. The gutter keeps the horizontal offset the
+      // renderer gave it — that is what holds it against the left edge of the
+      // viewport when the text is scrolled sideways; dropping it here sent the
+      // line numbers off the screen. The text is pushed right by the gutter's
       // growth so the two never overlap: the gutter's right edge lands at
-      // `gutterWidth * scale`, which is exactly where the text now starts.
-      const shift = anchor.gutterWidth * (this.scale - 1);
-      gutter.style.transform = `scale(${this.scale})`;
-      content.style.transform = `translateX(${shift}px) scale(${this.scale})`;
+      // `gutterWidth * scaleX`, which is exactly where the text now starts.
+      const shift = anchor.gutterWidth * (scaleX - 1);
+      gutter.style.transform = `translateX(${anchor.scrollLeft}px) scale(${scaleX}, ${scaleY})`;
+      content.style.transform = `translateX(${shift}px) scale(${scaleX}, ${scaleY})`;
     };
 
     const onTouchEnd = (event: TouchEvent) => {
       const anchor = this.anchor;
       if (!anchor || event.touches.length >= 2) return;
 
-      const scale = this.scale;
+      const next = this.size;
       this.anchor = null;
-      this.scale = 1;
+      this.size = 0;
       for (const node of [gutter, content]) {
         node.style.transform = '';
         node.style.transformOrigin = '';
@@ -143,7 +219,6 @@ export class PinchZoom {
       // just changed behind its back, so let it write that one again.
       this.editor.renderer.forgetStyle(gutter, 'transform');
 
-      const next = Math.round(anchor.fontSize * scale);
       if (next === this.editor.config.fontSize) return;
 
       // Now do it properly: a real font size, a real re-layout, sharp text.
@@ -154,11 +229,11 @@ export class PinchZoom {
       const rect = scroller.getBoundingClientRect();
       scroller.scrollTop = Math.max(0, coords.y - (anchor.clientY - rect.top));
       if (!this.editor.config.wordWrap) {
-        const gutter = this.editor.renderer.gutterWidth(
+        const gutterW = this.editor.renderer.gutterWidth(
           this.editor.buffer.lineCount,
           this.editor.config.lineNumbers,
         );
-        scroller.scrollLeft = Math.max(0, coords.x + gutter - (anchor.clientX - rect.left));
+        scroller.scrollLeft = Math.max(0, coords.x + gutterW - (anchor.clientX - rect.left));
       }
     };
 
