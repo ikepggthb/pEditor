@@ -7,6 +7,7 @@ import { LANGUAGES, languageForFilename } from '../editor/syntax/highlighter.ts'
 import { columnAt } from '../editor/view/columns.ts';
 import { KeyBar } from './keybar.ts';
 import { CodeKeyboard } from './keyboard/keyboard.ts';
+import { FrameMeter } from './frameMeter.ts';
 import { h, segmentRow, selectRow, toggleRow } from './dom.ts';
 import { debounce, loadDocument, loadSettings, saveDocument, saveSettings, throttle } from './storage.ts';
 import { lockDocumentScroll, trackVisualViewport } from './viewport.ts';
@@ -16,6 +17,7 @@ type Theme = 'auto' | 'dark' | 'light';
 const THEME_KEY = 'peditor.theme.v1';
 const KEYBOARD_KEY = 'peditor.keyboard.v1';
 const KEYBOARD_HEIGHT_KEY = 'peditor.keyboardHeight.v1';
+const FRAME_RATE_KEY = 'peditor.frameRate.v1';
 
 /** The application shell: chrome around the editor, plus what persists. */
 export class App {
@@ -32,6 +34,7 @@ export class App {
   private statusPosition: HTMLElement;
   private statusLanguage: HTMLElement;
   private statusSize: HTMLElement;
+  private statusFrames: HTMLElement;
   private sheet: HTMLDivElement;
   private undoButton: HTMLButtonElement;
   private redoButton: HTMLButtonElement;
@@ -41,6 +44,9 @@ export class App {
   /** Which keyboard the editor uses. The code keyboard is the default; the
    *  platform one is a tap away and is the only one that can run an IME. */
   private keyboardMode: InputMode = (localStorage.getItem(KEYBOARD_KEY) as InputMode) ?? 'custom';
+  /** Frame timing readout, off unless asked for — see ui/frameMeter.ts. */
+  private frameMeter = new FrameMeter();
+  private showFrameRate = localStorage.getItem(FRAME_RATE_KEY) === '1';
 
   private readonly host: HTMLElement;
 
@@ -73,8 +79,9 @@ export class App {
     this.redoButton = h('button', { type: 'button', class: 'icon-btn', title: 'Redo', text: '↷' }) as HTMLButtonElement;
 
     this.statusPosition = h('span', { class: 'status-item', text: 'Ln 1, Col 1' });
-    this.statusLanguage = h('span', { class: 'status-item' });
-    this.statusSize = h('span', { class: 'status-item' });
+    this.statusLanguage = h('span', { class: 'status-item status-language' });
+    this.statusSize = h('span', { class: 'status-item status-size' });
+    this.statusFrames = h('span', { class: 'status-item status-frames', hidden: true });
 
     this.sheet = h('div', { class: 'sheet', hidden: true }) as HTMLDivElement;
     this.root = h('div', { class: 'app' }) as HTMLDivElement;
@@ -95,6 +102,7 @@ export class App {
     const statusbar = h('footer', { class: 'statusbar' }, [
       this.statusPosition,
       h('span', { class: 'status-spacer' }),
+      this.statusFrames,
       this.statusLanguage,
       this.statusSize,
       keyboardButton,
@@ -167,8 +175,22 @@ export class App {
     lockDocumentScroll();
     trackVisualViewport(this.root);
     this.syncKeyboards();
+    this.applyFrameRate();
     this.updateStatus();
     this.updateSize();
+  }
+
+  /** Show or hide the frame-timing readout, and start/stop measuring. */
+  private applyFrameRate(): void {
+    this.statusFrames.hidden = !this.showFrameRate;
+    if (!this.showFrameRate) {
+      this.frameMeter.stop();
+      this.statusFrames.textContent = '';
+      return;
+    }
+    this.frameMeter.start(({ fps, worstMs }) => {
+      this.statusFrames.textContent = `${fps}fps · ${worstMs}ms`;
+    });
   }
 
   /** Show whichever keyboard is selected, and only while the editor is active. */
@@ -348,6 +370,11 @@ export class App {
       toggleRow('Insert spaces', config.insertSpaces, (value) => set({ insertSpaces: value })),
       toggleRow('Auto-close brackets', config.autoCloseBrackets, (value) => set({ autoCloseBrackets: value })),
       toggleRow('Auto indent', config.autoIndent, (value) => set({ autoIndent: value })),
+      toggleRow('Show frame rate', this.showFrameRate, (value) => {
+        this.showFrameRate = value;
+        localStorage.setItem(FRAME_RATE_KEY, value ? '1' : '0');
+        this.applyFrameRate();
+      }),
 
       h('div', { class: 'sheet-actions' }, [
         this.actionButton('Open file…', () => fileInput.click()),

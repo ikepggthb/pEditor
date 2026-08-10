@@ -102,6 +102,12 @@
   flex: none;
 }
 
+/* Diagnostic readout; only visible when explicitly switched on. */
+.status-frames {
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+
 .statusbar .icon-btn {
   width: 26px;
   height: 26px;
