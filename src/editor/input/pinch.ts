@@ -8,9 +8,10 @@ interface Anchor {
   /** Finger separation when the gesture began. */
   distance: number;
   fontSize: number;
-  /** Pinch centre in the sizer's own coordinates, for `transform-origin`. */
-  originX: number;
+  /** Vertical pinch centre in the sizer's coordinates, for `transform-origin`. */
   originY: number;
+  /** Gutter width at the start, needed to keep the text beside it as it grows. */
+  gutterWidth: number;
   /** The document position under the pinch centre, and where it sat on screen. */
   position: Position;
   clientX: number;
@@ -64,6 +65,8 @@ export class PinchZoom {
   attach(): void {
     const scroller = this.editor.renderer.scroller;
     const sizer = this.editor.renderer.sizer;
+    const gutter = this.editor.renderer.gutter;
+    const content = this.editor.renderer.content;
 
     const onTouchStart = (event: TouchEvent) => {
       // One finger is a scroll and belongs to the browser: leave immediately,
@@ -79,16 +82,28 @@ export class PinchZoom {
       this.anchor = {
         distance: distanceBetween(event.touches),
         fontSize: this.editor.config.fontSize,
-        originX: centre.x - sizerRect.left,
         originY: centre.y - sizerRect.top,
+        gutterWidth: this.editor.renderer.gutterWidth(
+          this.editor.buffer.lineCount,
+          this.editor.config.lineNumbers,
+        ),
         position: this.editor.positionAtClient(centre.x, centre.y),
         clientX: centre.x,
         clientY: centre.y,
       };
       this.scale = 1;
 
-      sizer.style.transformOrigin = `${this.anchor.originX}px ${this.anchor.originY}px`;
-      sizer.style.willChange = 'transform';
+      // Scaled separately, and both anchored to x = 0 rather than to the pinch
+      // centre. Scaling the whole sizer about the fingers is simpler, but it
+      // drags the gutter's left edge off the side of the screen — the line
+      // numbers slide away instead of growing in place. Pinned at the left they
+      // grow like everything else, and the two stay in step vertically because
+      // they share the same vertical origin.
+      const origin = `0px ${this.anchor.originY}px`;
+      gutter.style.transformOrigin = origin;
+      content.style.transformOrigin = origin;
+      gutter.style.willChange = 'transform';
+      content.style.willChange = 'transform';
     };
 
     const onTouchMove = (event: TouchEvent) => {
@@ -103,9 +118,13 @@ export class PinchZoom {
       const max = MAX_FONT_SIZE / anchor.fontSize;
       this.scale = Math.max(min, Math.min(max, raw));
 
-      // The only write in the whole gesture, and one the compositor can apply
-      // without touching layout.
-      sizer.style.transform = `scale(${this.scale})`;
+      // The only writes in the whole gesture, and ones the compositor applies
+      // without touching layout. The text is pushed right by the gutter's
+      // growth so the two never overlap: the gutter's right edge lands at
+      // `gutterWidth * scale`, which is exactly where the text now starts.
+      const shift = anchor.gutterWidth * (this.scale - 1);
+      gutter.style.transform = `scale(${this.scale})`;
+      content.style.transform = `translateX(${shift}px) scale(${this.scale})`;
     };
 
     const onTouchEnd = (event: TouchEvent) => {
@@ -115,9 +134,14 @@ export class PinchZoom {
       const scale = this.scale;
       this.anchor = null;
       this.scale = 1;
-      sizer.style.transform = '';
-      sizer.style.transformOrigin = '';
-      sizer.style.willChange = '';
+      for (const node of [gutter, content]) {
+        node.style.transform = '';
+        node.style.transformOrigin = '';
+        node.style.willChange = '';
+      }
+      // The renderer caches the styles it writes; the gutter's transform was
+      // just changed behind its back, so let it write that one again.
+      this.editor.renderer.forgetStyle(gutter, 'transform');
 
       const next = Math.round(anchor.fontSize * scale);
       if (next === this.editor.config.fontSize) return;

@@ -126,6 +126,14 @@ export class Renderer {
     return Math.round((digits + 2) * this.metrics.charWidth);
   }
 
+  /**
+   * Drop one cached style value, for when something outside the renderer has
+   * written that property directly (the pinch gesture does, on the gutter).
+   */
+  forgetStyle(node: HTMLElement, property: string): void {
+    this.styleCache.get(node)?.delete(property);
+  }
+
   /** Write a style only when it changed; every write costs a style recalc. */
   private setStyle(node: HTMLElement, property: string, value: string): void {
     if (this.styleCache.get(node)?.get(property) === value) return;
