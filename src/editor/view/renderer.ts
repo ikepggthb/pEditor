@@ -486,6 +486,12 @@ export class Renderer {
     for (const [, node] of this.lineElements) {
       node.remove();
       this.styleCache.delete(node);
+      // Forget what the node holds, not just where it was. The cache key covers
+      // the text and the wrap, but a line's painted HTML also carries pixel
+      // widths for tabs and wide glyphs — so a node recycled onto the same line
+      // after a font change would match its own stale key and keep the old
+      // measurements.
+      delete node.dataset.key;
       if (this.pool.length < 80) this.pool.push(node);
     }
     this.lineElements.clear();

@@ -70,6 +70,11 @@ export function nextWordBoundary(text: string, ch: number, dir: 1 | -1): number 
 
 /** Index of the first non-whitespace character, or the line length if blank. */
 export function firstNonWhitespace(text: string): number {
-  const match = /\S/.exec(text);
-  return match ? match.index : text.length;
+  // A loop rather than `/\S/.exec`, which allocates a match object per call —
+  // and this is called for every line of the document when the wrap changes.
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code !== 32 && code !== 9 && !(code >= 0x0b && code <= 0x0d) && code !== 0xa0) return i;
+  }
+  return text.length;
 }

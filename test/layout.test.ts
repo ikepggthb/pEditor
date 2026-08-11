@@ -133,3 +133,60 @@ test('changing the wrap width invalidates and bumps the generation', () => {
   assert.notEqual(layout.generation, first);
   assert.equal(layout.totalRows, 1);
 });
+
+// ------------------------------------------------- re-wrapping vs re-widening
+
+test('a wrap change keeps the widest line, which no viewport ever showed', () => {
+  // The long line is well past anything a viewport would paint, so its width
+  // can only come from the pass that counts rows for the whole document.
+  const lines = ['short', ...Array.from({ length: 50 }, (_, i) => `line ${i}`), 'x'.repeat(300)];
+  const { layout } = makeLayout(lines.join('\n'), 20, false);
+  assert.equal(layout.totalRows, lines.length);
+  assert.equal(layout.widestLineColumns, 300);
+
+  // Zooming changes how many columns fit; it cannot change how wide the text is.
+  layout.setViewportWidth(10 * 10);
+  assert.equal(layout.widestLineColumns, 300);
+  layout.setViewportWidth(60 * 10);
+  assert.equal(layout.widestLineColumns, 300);
+});
+
+test('row counts follow the wrap column, in both directions', () => {
+  const { layout } = makeLayout('a'.repeat(60), 20);
+  assert.equal(layout.totalRows, 3);
+  layout.setViewportWidth(15 * 10);
+  assert.equal(layout.totalRows, 4);
+  layout.setViewportWidth(30 * 10);
+  assert.equal(layout.totalRows, 2);
+  layout.setViewportWidth(20 * 10);
+  assert.equal(layout.totalRows, 3);
+});
+
+test('an edit still re-widens the line it touched', () => {
+  const { buffer, layout } = makeLayout('short\nalso short', 40, false);
+  assert.equal(layout.totalRows, 2); // forces the pass that measures widths
+  assert.equal(layout.widestLineColumns, 10);
+  buffer.replace({ from: pos(0, 0), to: pos(0, 5) }, 'y'.repeat(80));
+  layout.linesChanged(0, 1, 1);
+  assert.equal(layout.totalRows, 2);
+  assert.equal(layout.widestLineColumns, 80);
+});
+
+test('counted rows and laid-out rows agree', () => {
+  // `totalRows` counts without building layouts; `rowsInLine` builds them.
+  // A disagreement puts every line below it at the wrong height.
+  const text = [
+    '  const wrapped = veryLongFunctionName(argument, another, third) + 12345;',
+    '\t\tconst tabbed = "a string that runs on for a while past the wrap column";',
+    'これは日本語の行です。折り返しの位置を確かめるために長くしています。',
+    'short',
+    '',
+  ].join('\n');
+  for (const columns of [12, 20, 33, 40]) {
+    const { layout } = makeLayout(text, columns);
+    const counted = layout.totalRows;
+    let laidOut = 0;
+    for (let i = 0; i < 5; i++) laidOut += layout.rowsInLine(i);
+    assert.equal(counted, laidOut, `at ${columns} columns`);
+  }
+});

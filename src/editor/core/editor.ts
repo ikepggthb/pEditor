@@ -153,12 +153,13 @@ export class Editor {
 
     const metricsChanged = this.metrics.measure(this.renderer.measureProbe);
     const gutter = this.renderer.gutterWidth(this.buffer.lineCount, this.config.lineNumbers);
+    // Drops the wrap itself if the column count moved — and nothing at all if
+    // it did not, or if wrapping is off, in which case where a line breaks is
+    // not a question the font gets a say in.
     this.layout.setViewportWidth(Math.max(80, clientWidth - gutter - 4));
 
-    if (metricsChanged) {
-      this.layout.invalidateAll();
-      this.renderer.invalidateAll();
-    }
+    // The painted rows are in pixels, so they always have to be redone.
+    if (metricsChanged) this.renderer.invalidateAll();
     this.scheduleRender();
   }
 
@@ -258,9 +259,13 @@ export class Editor {
 
   setConfig(patch: Partial<EditorConfig>): void {
     const next = { ...this.config, ...patch };
+    // A tab size or wrap mode change alters how wide the text is, and every
+    // cached column with it. A font size change does not: it alters only how
+    // many of those columns fit, which `measure` works out on its own. Telling
+    // the two apart is what keeps a pinch on a large document cheap.
+    const rewidth = next.tabSize !== this.config.tabSize || next.wordWrap !== this.config.wordWrap;
     const structural =
-      next.tabSize !== this.config.tabSize ||
-      next.wordWrap !== this.config.wordWrap ||
+      rewidth ||
       next.fontSize !== this.config.fontSize ||
       next.lineNumbers !== this.config.lineNumbers;
 
@@ -269,8 +274,8 @@ export class Editor {
     this.layout.options.wordWrap = next.wordWrap;
     this.applyFontSize();
 
+    if (rewidth) this.layout.invalidateAll();
     if (structural) {
-      this.layout.invalidateAll();
       this.renderer.invalidateAll();
       this.measure({ force: true });
     }
