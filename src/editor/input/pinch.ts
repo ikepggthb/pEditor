@@ -1,27 +1,15 @@
 import type { Editor } from '../core/editor.ts';
 import type { Position } from '../model/position.ts';
-import type { Cell } from '../view/metrics.ts';
 
 const MIN_FONT_SIZE = 9;
 const MAX_FONT_SIZE = 32;
 
 interface Anchor {
-  /** Finger separation when the gesture began. */
   distance: number;
   fontSize: number;
-  /** The cell at that font size, the baseline every scale is measured against. */
-  cell: Cell;
-  /** What each candidate font size measures, so the preview can match it exactly. */
-  sizes: Map<number, Cell>;
-  /** Vertical pinch centre in the sizer's coordinates, for `transform-origin`. */
-  originY: number;
-  /** Horizontal scroll offset, which the gutter cancels out to stay on screen. */
-  scrollLeft: number;
-  /** Gutter width at the start, needed to keep the text beside it as it grows. */
-  gutterWidth: number;
-  /** The document position under the pinch centre, and where it sat on screen. */
+  /** The document position under the pinch centre when the gesture began. */
   position: Position;
-  clientX: number;
+  /** Where that position sat on screen, so it can be kept there. */
   clientY: number;
 }
 
@@ -41,209 +29,92 @@ function midpointOf(touches: TouchList): { x: number; y: number } {
 /**
  * Pinch to resize the text.
  *
- * The gesture has two halves, and getting the split right is the whole point.
+ * A phone's default response to a pinch is to zoom the page, which scales the
+ * chrome along with the code and leaves the layout wider than the screen. Here
+ * the gesture changes the editor's font size instead: the character cell grows,
+ * and because every measurement in the view derives from that cell, the gutter,
+ * line spacing and wrap width all follow from the same number.
  *
- * While the fingers are down, the editor's contents are scaled with a CSS
- * `transform`. That is a compositor property: it costs no layout, no restyle
- * and no repaint, so the text tracks the fingers exactly the way the browser's
- * own page zoom does. An earlier version instead recomputed the font size on
- * every move — but a font size is a whole number of pixels, so the text could
- * only jump between discrete steps, each one re-wrapping the document. No
- * amount of optimisation makes that feel continuous; it was the wrong
- * mechanism, not a slow one.
- *
- * The scale is not the raw finger ratio, though. It is snapped to the nearest
- * scale a font size can actually produce, measured beforehand rather than
- * assumed: the preview therefore shows the size that will be applied, and
- * nothing changes size when the fingers lift. Only the sharpness does, when the
- * scale is folded into a real font size and the document is laid out again for
- * real — the same trade every map and PDF viewer makes.
- *
- * Only the editor's contents scale — the toolbar, status bar and keyboard keep
- * their size, which is what page zoom cannot do.
+ * `user-scalable=no` is not enough on its own — iOS Safari has ignored it since
+ * iOS 10 — so the page-level gesture is cancelled explicitly.
  */
 export class PinchZoom {
   private readonly editor: Editor;
   private anchor: Anchor | null = null;
-  /** Font size the current finger separation corresponds to. */
-  private size = 0;
-  private sizes: Map<number, Cell> | null = null;
-  private sizesFont = '';
+  private pendingSize: number | null = null;
+  private frame = 0;
   private disposers: (() => void)[] = [];
 
   constructor(editor: Editor) {
     this.editor = editor;
   }
 
-  /**
-   * What every font size in range measures, built once and reused.
-   *
-   * Twenty-four probe measurements is more than one wants on a touch frame, so
-   * it happens when the fingers land — before anything is moving — and is kept
-   * until the font itself changes.
-   */
-  private measureSizes(): Map<number, Cell> {
-    const probe = this.editor.renderer.measureProbe;
-    const font = getComputedStyle(probe).fontFamily;
-    // A web font that finished loading changes the measurements without
-    // changing the family name, so the live cell is checked too.
-    const live = this.sizes?.get(this.editor.config.fontSize);
-    if (this.sizes && this.sizesFont === font && live && live.lineHeight === this.editor.metrics.lineHeight) {
-      return this.sizes;
-    }
-
-    const sizes = new Map<number, Cell>();
-    for (let size = MIN_FONT_SIZE; size <= MAX_FONT_SIZE; size++) {
-      const cell = this.editor.metrics.cellAt(probe, size);
-      if (cell) sizes.set(size, cell);
-    }
-    this.sizes = sizes;
-    this.sizesFont = font;
-    return sizes;
-  }
-
-  /** The font size whose line height comes closest to `scale` times the anchor's. */
-  private sizeFor(anchor: Anchor, scale: number): number {
-    const targetHeight = anchor.cell.lineHeight * scale;
-    const targetWidth = anchor.cell.charWidth * scale;
-    let best = anchor.fontSize;
-    let bestError = Infinity;
-    for (const [size, cell] of anchor.sizes) {
-      // Line height first: it is what the eye reads as "the text got bigger",
-      // and it is the coarser of the two, so it decides. Character width breaks
-      // the ties two sizes that round to the same height would otherwise leave.
-      const error =
-        Math.abs(cell.lineHeight - targetHeight) + Math.abs(cell.charWidth - targetWidth) / 1000;
-      if (error < bestError) {
-        bestError = error;
-        best = size;
-      }
-    }
-    return best;
-  }
-
   attach(): void {
     const scroller = this.editor.renderer.scroller;
-    const sizer = this.editor.renderer.sizer;
-    const gutter = this.editor.renderer.gutter;
-    const content = this.editor.renderer.content;
 
     const onTouchStart = (event: TouchEvent) => {
-      // One finger is a scroll and belongs to the browser: leave immediately,
-      // and above all do not cancel it.
+      // One finger is a scroll and belongs to the browser: bail out before
+      // doing anything, so the cost of this listener on the scroll path is a
+      // single length check.
       if (event.touches.length !== 2) return;
 
-      // Two fingers make the gesture ours. Without this the browser treats it
-      // as a two-finger pan and stops delivering moves after the first one.
+      // Two fingers make the gesture ours, and this is the only moment that
+      // claim can still be made. Without it the browser takes the gesture as a
+      // two-finger pan and simply stops delivering `touchmove` to the page —
+      // one event arrives, the text jumps one step, and nothing follows.
       event.preventDefault();
 
       const centre = midpointOf(event.touches);
-      const sizerRect = sizer.getBoundingClientRect();
-      const fontSize = this.editor.config.fontSize;
-      const sizes = this.measureSizes();
       this.anchor = {
         distance: distanceBetween(event.touches),
-        fontSize,
-        cell: sizes.get(fontSize) ?? {
-          charWidth: this.editor.metrics.charWidth,
-          lineHeight: this.editor.metrics.lineHeight,
-        },
-        sizes,
-        originY: centre.y - sizerRect.top,
-        scrollLeft: scroller.scrollLeft,
-        gutterWidth: this.editor.renderer.gutterWidth(
-          this.editor.buffer.lineCount,
-          this.editor.config.lineNumbers,
-        ),
+        fontSize: this.editor.config.fontSize,
         position: this.editor.positionAtClient(centre.x, centre.y),
-        clientX: centre.x,
         clientY: centre.y,
       };
-      this.size = fontSize;
-
-      // Scaled separately, and both anchored to x = 0 rather than to the pinch
-      // centre. Scaling the whole sizer about the fingers is simpler, but it
-      // drags the gutter's left edge off the side of the screen — the line
-      // numbers slide away instead of growing in place. Pinned at the left they
-      // grow like everything else, and the two stay in step vertically because
-      // they share the same vertical origin.
-      const origin = `0px ${this.anchor.originY}px`;
-      gutter.style.transformOrigin = origin;
-      content.style.transformOrigin = origin;
-      gutter.style.willChange = 'transform';
-      content.style.willChange = 'transform';
     };
 
     const onTouchMove = (event: TouchEvent) => {
-      const anchor = this.anchor;
-      if (!anchor || event.touches.length !== 2) return;
+      // A one-finger drag leaves here untouched and uncancelled, so the browser
+      // scrolls it exactly as it would with no listener at all.
+      if (!this.anchor || event.touches.length !== 2) return;
       event.preventDefault();
 
-      const size = this.sizeFor(anchor, distanceBetween(event.touches) / anchor.distance);
-      if (size === this.size) return;
-      this.size = size;
+      const scale = distanceBetween(event.touches) / this.anchor.distance;
+      // Whole pixels: the re-layout is not free, and a half-pixel of type size
+      // is not a difference anyone is pinching for.
+      const next = Math.round(
+        Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, this.anchor.fontSize * scale)),
+      );
+      if (next === this.editor.config.fontSize) return;
 
-      // Not the finger ratio but the ratio the chosen font size really measures,
-      // and separately per axis: the line height is rounded to whole pixels and
-      // the advance width is not, so a single number cannot describe both. Using
-      // the real ones is what makes the preview and the result the same size.
-      const cell = anchor.sizes.get(size) ?? anchor.cell;
-      const scaleX = cell.charWidth / anchor.cell.charWidth;
-      const scaleY = cell.lineHeight / anchor.cell.lineHeight;
-
-      // The only writes in the whole gesture, and ones the compositor applies
-      // without touching layout. The gutter keeps the horizontal offset the
-      // renderer gave it — that is what holds it against the left edge of the
-      // viewport when the text is scrolled sideways; dropping it here sent the
-      // line numbers off the screen. The text is pushed right by the gutter's
-      // growth so the two never overlap: the gutter's right edge lands at
-      // `gutterWidth * scaleX`, which is exactly where the text now starts.
-      const shift = anchor.gutterWidth * (scaleX - 1);
-      gutter.style.transform = `translateX(${anchor.scrollLeft}px) scale(${scaleX}, ${scaleY})`;
-      content.style.transform = `translateX(${shift}px) scale(${scaleX}, ${scaleY})`;
+      this.pendingSize = next;
+      if (this.frame) return;
+      this.frame = requestAnimationFrame(() => {
+        this.frame = 0;
+        const size = this.pendingSize;
+        this.pendingSize = null;
+        if (size !== null) this.applyFontSize(size);
+      });
     };
 
     const onTouchEnd = (event: TouchEvent) => {
-      const anchor = this.anchor;
-      if (!anchor || event.touches.length >= 2) return;
-
-      const next = this.size;
+      if (event.touches.length >= 2) return;
       this.anchor = null;
-      this.size = 0;
-      for (const node of [gutter, content]) {
-        node.style.transform = '';
-        node.style.transformOrigin = '';
-        node.style.willChange = '';
-      }
-      // The renderer caches the styles it writes; the gutter's transform was
-      // just changed behind its back, so let it write that one again.
-      this.editor.renderer.forgetStyle(gutter, 'transform');
-
-      if (next === this.editor.config.fontSize) return;
-
-      // Now do it properly: a real font size, a real re-layout, sharp text.
-      this.editor.setConfig({ fontSize: next });
-
-      // Keep the line that was between the fingers between the fingers.
-      const coords = this.editor.layout.coordsAt(anchor.position);
-      const rect = scroller.getBoundingClientRect();
-      scroller.scrollTop = Math.max(0, coords.y - (anchor.clientY - rect.top));
-      if (!this.editor.config.wordWrap) {
-        const gutterW = this.editor.renderer.gutterWidth(
-          this.editor.buffer.lineCount,
-          this.editor.config.lineNumbers,
-        );
-        scroller.scrollLeft = Math.max(0, coords.x + gutterW - (anchor.clientX - rect.left));
-      }
     };
 
     // Safari's own pinch-zoom arrives as these, separately from touch events.
     const preventGesture = (event: Event) => event.preventDefault();
 
+    // Both `touchstart` and `touchmove` stay cancellable. An earlier attempt
+    // registered the move listener lazily, from inside `touchstart`, to keep
+    // it off the scroll path — but a listener added after a gesture has begun
+    // cannot cancel that gesture, so the browser kept the pinch as a pan and
+    // stopped delivering moves after the first one. What the browser waits for
+    // here is a length check that exits immediately for a one-finger drag.
     scroller.addEventListener('touchstart', onTouchStart, { passive: false });
     scroller.addEventListener('touchmove', onTouchMove, { passive: false });
-    scroller.addEventListener('touchend', onTouchEnd);
-    scroller.addEventListener('touchcancel', onTouchEnd);
+    scroller.addEventListener('touchend', onTouchEnd, { passive: true });
+    scroller.addEventListener('touchcancel', onTouchEnd, { passive: true });
     for (const type of ['gesturestart', 'gesturechange', 'gestureend']) {
       document.addEventListener(type, preventGesture, { passive: false });
     }
@@ -260,7 +131,25 @@ export class PinchZoom {
   }
 
   detach(): void {
+    if (this.frame) cancelAnimationFrame(this.frame);
+    this.frame = 0;
     for (const dispose of this.disposers) dispose();
     this.disposers = [];
+  }
+
+  /**
+   * Resize, then scroll so the line under the fingers stays under the fingers.
+   * Without this the text slides away as it grows and the pinch feels like it
+   * is happening to some other part of the document.
+   */
+  private applyFontSize(size: number): void {
+    const anchor = this.anchor;
+    this.editor.setConfig({ fontSize: size });
+    if (!anchor) return;
+
+    const scroller = this.editor.renderer.scroller;
+    const coords = this.editor.layout.coordsAt(anchor.position);
+    const offsetInViewport = anchor.clientY - scroller.getBoundingClientRect().top;
+    scroller.scrollTop = Math.max(0, coords.y - offsetInViewport);
   }
 }
