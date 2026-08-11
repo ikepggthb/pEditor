@@ -187,6 +187,24 @@ export class Editor {
 
   // ---------------------------------------------------------------- rendering
 
+  /**
+   * Paint enough beyond the viewport to survive the text shrinking by `factor`
+   * without a repaint, or `null` to go back to the ordinary band.
+   *
+   * For a gesture that scales what is already painted rather than repainting
+   * it — a pinch. Shrunk by a half, the viewport shows twice the rows, and
+   * without this the ones it uncovers were never drawn.
+   */
+  setZoomHeadroom(factor: number | null): void {
+    if (factor === null) {
+      this.renderer.setOverscan(null);
+      return;
+    }
+    const rows = this.viewportHeight / this.metrics.lineHeight;
+    this.renderer.setOverscan(Math.ceil((rows * (1 / factor - 1)) / 2));
+    this.renderNow();
+  }
+
   scheduleRender(): void {
     if (this.renderScheduled) return;
     this.renderScheduled = true;

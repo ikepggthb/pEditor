@@ -353,11 +353,14 @@ export class App {
     const config = this.editor.config;
     const set = (patch: Partial<EditorConfig>) => this.editor.setConfig(patch);
 
-    const fontValue = h('span', { class: 'stepper-value', text: `${config.fontSize}px` });
+    // A pinch leaves a fractional size behind, deliberately — see input/pinch.ts.
+    // The stepper works in whole pixels regardless, and rounds off whatever the
+    // gesture left rather than carrying the fraction along for ever.
+    const fontValue = h('span', { class: 'stepper-value', text: `${Math.round(config.fontSize)}px` });
     const smaller = h('button', { type: 'button', class: 'stepper-btn', text: '−' });
     const larger = h('button', { type: 'button', class: 'stepper-btn', text: '+' });
     const stepFont = (delta: number) => {
-      const size = Math.max(10, Math.min(28, this.editor.config.fontSize + delta));
+      const size = Math.max(10, Math.min(28, Math.round(this.editor.config.fontSize) + delta));
       set({ fontSize: size });
       fontValue.textContent = `${size}px`;
     };

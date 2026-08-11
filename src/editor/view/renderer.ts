@@ -71,6 +71,9 @@ export class Renderer {
   private activeLine = -1;
   private lastCaretTransform = '';
   private lastScrollLeft = 0;
+  /** Temporarily widened band, for a gesture that will shrink the text without
+   *  any chance to repaint. `null` means the ordinary overscan. */
+  private overscan: number | null = null;
 
   private readonly metrics: Metrics;
 
@@ -124,6 +127,20 @@ export class Renderer {
     if (!show) return Math.round(this.metrics.charWidth);
     const digits = Math.max(2, String(lineCount).length);
     return Math.round((digits + 2) * this.metrics.charWidth);
+  }
+
+  /**
+   * Paint a wider band than usual, or `null` to go back to the normal one.
+   *
+   * A pinch scales the painted rows without repainting them, so shrinking the
+   * text uncovers rows that were never drawn — and there is no render during
+   * the gesture to notice. Painting further ahead before it starts is what
+   * keeps the bottom of the screen from going blank.
+   */
+  setOverscan(rows: number | null): void {
+    if (this.overscan === rows) return;
+    this.overscan = rows;
+    if (rows !== null) this.painted = { first: 0, last: -1, state: '' };
   }
 
   /**
@@ -197,8 +214,9 @@ export class Renderer {
     let firstLine = this.painted.first;
     let lastLine = this.painted.last;
     if (!covered) {
-      firstLine = layout.lineAtRow(Math.max(0, topRow - OVERSCAN)).line;
-      lastLine = layout.lineAtRow(Math.min(totalRows, bottomRow + OVERSCAN)).line;
+      const overscan = this.overscan ?? OVERSCAN;
+      firstLine = layout.lineAtRow(Math.max(0, topRow - overscan)).line;
+      lastLine = layout.lineAtRow(Math.min(totalRows, bottomRow + overscan)).line;
       this.renderLines(input, firstLine, lastLine);
       this.renderGutter(input, firstLine, lastLine, gutterW);
       this.painted = { first: firstLine, last: lastLine, state };

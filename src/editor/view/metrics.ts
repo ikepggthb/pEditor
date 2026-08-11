@@ -1,3 +1,33 @@
+/** One character cell: the unit the whole view is measured in. */
+export interface Cell {
+  charWidth: number;
+  lineHeight: number;
+}
+
+/**
+ * Measure the cell the probe currently produces, or `null` if the probe is not
+ * laid out yet (detached, or the font has not loaded).
+ *
+ * Neither number is rounded. They are the font's real advance and the real line
+ * box, and the layout places tabs and wide glyphs by them — rounding would make
+ * our arithmetic drift from what the browser paints, a little more with every
+ * character on the line. It would also put a floor on how finely the text can
+ * be resized, and that floor is exactly what a pinch runs into.
+ */
+function sample(probe: HTMLElement): Cell | null {
+  const text = 'MMMMMMMMMMMMMMMMMMMM';
+  probe.textContent = text;
+  const rect = probe.getBoundingClientRect();
+  probe.textContent = '';
+
+  const charWidth = rect.width / text.length;
+  if (!(charWidth > 0)) return null;
+
+  const parsed = parseFloat(getComputedStyle(probe).lineHeight);
+  const lineHeight = Number.isFinite(parsed) && parsed > 0 ? parsed : rect.height;
+  return { charWidth, lineHeight: Math.max(1, lineHeight) };
+}
+
 /**
  * Character cell measurements.
  *
@@ -12,31 +42,31 @@ export class Metrics {
 
   /** Measure against a probe element that has the editor's real font applied. */
   measure(probe: HTMLElement): boolean {
-    const sample = 'MMMMMMMMMMMMMMMMMMMM';
-    probe.textContent = sample;
-    const rect = probe.getBoundingClientRect();
-    probe.textContent = '';
+    const cell = sample(probe);
+    if (!cell) return false;
 
-    const width = rect.width / sample.length;
-    if (!(width > 0)) return false;
-
-    const style = getComputedStyle(probe);
-    const parsed = parseFloat(style.lineHeight);
-    const raw = Number.isFinite(parsed) && parsed > 0 ? parsed : rect.height;
-
-    // Rounded to whole pixels so every line lands on a device pixel boundary.
-    // At a fractional line height the rows sit at 67.5px, 90px, 112.5px… and
-    // text on a half-pixel has to be re-rasterised as it scrolls instead of
-    // being moved by the compositor — which is what a stuttering flick is.
-    const height = Math.max(1, Math.round(raw));
-
-    // The character width is deliberately *not* rounded: it is the font's real
-    // advance, and the layout uses it to place tabs and wide glyphs. Rounding
-    // would make our arithmetic drift from what the browser paints, a little
-    // more with every character on the line.
-    const changed = Math.abs(width - this.charWidth) > 0.01 || height !== this.lineHeight;
-    this.charWidth = width;
-    this.lineHeight = height;
+    const changed =
+      Math.abs(cell.charWidth - this.charWidth) > 0.01 ||
+      Math.abs(cell.lineHeight - this.lineHeight) > 0.01;
+    this.charWidth = cell.charWidth;
+    this.lineHeight = cell.lineHeight;
     return changed;
+  }
+
+  /**
+   * The cell the editor *would* have at `fontSize`, without adopting it.
+   *
+   * Pinch-zoom needs this: it has to know what a size will actually produce
+   * before committing to it, because a font's advance is not exactly
+   * proportional to its size — the font engine rounds and hints. Scaling by the
+   * assumed ratio rather than the measured one is what makes text change size
+   * the moment the fingers lift.
+   */
+  cellAt(probe: HTMLElement, fontSize: number): Cell | null {
+    const previous = probe.style.fontSize;
+    probe.style.fontSize = `${fontSize}px`;
+    const cell = sample(probe);
+    probe.style.fontSize = previous;
+    return cell;
   }
 }
