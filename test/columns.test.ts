@@ -7,6 +7,7 @@ import {
   isSimpleAscii,
   isWideCodePoint,
   lineColumns,
+  stepIndex,
 } from '../src/editor/view/columns.ts';
 
 test('ASCII columns match string indices', () => {
@@ -62,4 +63,61 @@ test('isSimpleAscii allows tabs but not wide characters', () => {
   assert.ok(isSimpleAscii('const x = 1;\t// ok'));
   assert.ok(!isSimpleAscii('const x = "日本";'));
   assert.ok(!isSimpleAscii('café'));
+});
+
+// ------------------------------------------------------------------- emoji
+
+const FAMILY = '👨‍👩‍👧‍👦'; // four people joined by ZWJ: 11 code units, one glyph
+const THUMB = '👍🏽'; // hand plus skin tone: 4 code units
+const FLAG = '🇯🇵'; // two regional indicators
+const HEART = '❤️'; // heart plus an emoji presentation selector
+
+test('an emoji is one glyph however many code points it is made of', () => {
+  assert.equal(lineColumns(FAMILY, 4), 2);
+  assert.equal(lineColumns(THUMB, 4), 2);
+  assert.equal(lineColumns(FLAG, 4), 2);
+  assert.equal(lineColumns('🚀', 4), 2);
+  assert.equal(lineColumns(`a${FAMILY}b`, 4), 4);
+});
+
+test('a presentation selector is what makes a symbol an emoji', () => {
+  // The bare heart is text, and takes one cell like any other punctuation.
+  assert.equal(lineColumns('❤', 4), 1);
+  assert.equal(lineColumns(HEART, 4), 2);
+});
+
+test('the caret steps over a whole emoji, in both directions', () => {
+  const text = `a${FAMILY}b`;
+  assert.equal(stepIndex(text, 0, 1), 1);
+  assert.equal(stepIndex(text, 1, 1), 1 + FAMILY.length);
+  assert.equal(stepIndex(text, 1 + FAMILY.length, -1), 1);
+  assert.equal(stepIndex(text, 1, -1), 0);
+
+  // And over the parts that are easiest to leave behind.
+  assert.equal(stepIndex(THUMB, 0, 1), THUMB.length);
+  assert.equal(stepIndex(FLAG, FLAG.length, -1), 0);
+  assert.equal(stepIndex(HEART, HEART.length, -1), 0);
+});
+
+test('columnMap gives every code unit of an emoji the column after it', () => {
+  const map = columnMap(`a${THUMB}b`, 4);
+  assert.equal(map[0], 0);
+  assert.equal(map[1], 1);
+  // Every index inside the emoji reports the column past it.
+  for (let i = 2; i <= 1 + THUMB.length; i++) assert.equal(map[i], 3, `index ${i}`);
+  assert.equal(map[map.length - 1], 4);
+});
+
+test('tapping an emoji lands on one side of it, never inside', () => {
+  const text = `a${FAMILY}b`;
+  assert.equal(indexAtColumn(text, 1, 4), 1);
+  assert.equal(indexAtColumn(text, 2, 4), 1 + FAMILY.length); // past the midpoint
+  assert.equal(indexAtColumn(text, 3, 4), 1 + FAMILY.length);
+});
+
+test('combining marks stay with the letter they modify', () => {
+  const combined = 'é'; // e + combining acute
+  assert.equal(lineColumns(combined, 4), 1);
+  assert.equal(stepIndex(combined, 0, 1), 2);
+  assert.equal(stepIndex(combined, 2, -1), 0);
 });

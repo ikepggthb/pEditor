@@ -1,6 +1,6 @@
 import type { TextBuffer } from '../model/textBuffer.ts';
 import { type Position, pos } from '../model/position.ts';
-import { columnMap, isWideCodePoint } from './columns.ts';
+import { clusterEnds, columnMap, endOfCluster, isWideCodePoint } from './columns.ts';
 import { firstNonWhitespace } from '../model/words.ts';
 import type { Metrics } from './metrics.ts';
 
@@ -24,11 +24,11 @@ export interface LayoutOptions {
 /** Break after these so wrapped code splits at somewhere readable. */
 const BREAK_AFTER = new Set([' ', '\t', ',', ';', ')', ']', '}', '>', '-', '/', '|', '&', '.', ':']);
 
-function canBreakAfter(text: string, index: number, cp: number): boolean {
+function canBreakAfter(text: string, index: number, cp: number, next: number): boolean {
   if (BREAK_AFTER.has(text[index])) return true;
   // Japanese and Chinese text has no spaces; breaking between glyphs is normal.
   if (isWideCodePoint(cp)) return true;
-  const nextCp = text.codePointAt(index + (cp > 0xffff ? 2 : 1));
+  const nextCp = text.codePointAt(next);
   return nextCp !== undefined && isWideCodePoint(nextCp);
 }
 
@@ -135,6 +135,7 @@ export class Layout {
 
     const rowStarts = [0];
     const rowIndent = [0];
+    const ends = clusterEnds(text);
     let rowStart = 0;
     let currentIndent = 0;
     let lastOpportunity = -1;
@@ -142,7 +143,9 @@ export class Layout {
 
     while (i < text.length) {
       const cp = text.codePointAt(i) as number;
-      const units = cp > 0xffff ? 2 : 1;
+      // Whole glyphs, so a wrap can never land inside one.
+      const next = endOfCluster(text, i, ends);
+      const units = next - i;
       const endColumn = columns[i + units] - columns[rowStart] + currentIndent;
 
       if (endColumn > this.wrapColumns && i > rowStart) {
@@ -158,8 +161,8 @@ export class Layout {
         continue;
       }
 
-      if (canBreakAfter(text, i, cp)) lastOpportunity = i + units;
-      i += units;
+      if (canBreakAfter(text, i, cp, next)) lastOpportunity = next;
+      i = next;
     }
 
     return { rowStarts, rowIndent, columns, width };

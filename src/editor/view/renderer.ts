@@ -6,7 +6,7 @@ import { selectionEnd, selectionIsEmpty, selectionStart } from '../model/selecti
 import type { TextRange } from '../model/position.ts';
 import type { Layout, LineLayout } from './layout.ts';
 import type { Metrics } from './metrics.ts';
-import { isWideCodePoint } from './columns.ts';
+import { clusterEnds, endOfCluster } from './columns.ts';
 
 export interface RenderInput {
   buffer: TextBuffer;
@@ -270,19 +270,29 @@ export class Renderer {
     if (text.length === 0) return '<div class="pe-row"><br></div>';
 
     const charWidth = this.metrics.charWidth;
+    // Segmenting a line is the expensive part of laying out anything beyond
+    // ASCII, so it happens once here and is handed down to every row.
+    const ends = clusterEnds(text);
     let html = '';
     for (let row = 0; row < layout.rowStarts.length; row++) {
       const start = layout.rowStarts[row];
       const end = row + 1 < layout.rowStarts.length ? layout.rowStarts[row + 1] : text.length;
       const indent = layout.rowIndent[row] * charWidth;
       html += indent > 0 ? `<div class="pe-row" style="padding-left:${indent}px">` : '<div class="pe-row">';
-      html += this.rowHtml(text, layout, tokens, start, end);
+      html += this.rowHtml(text, layout, tokens, start, end, ends);
       html += '</div>';
     }
     return html;
   }
 
-  private rowHtml(text: string, layout: LineLayout, tokens: Token[], start: number, end: number): string {
+  private rowHtml(
+    text: string,
+    layout: LineLayout,
+    tokens: Token[],
+    start: number,
+    end: number,
+    ends: Int32Array | null,
+  ): string {
     if (end <= start) return '<br>';
 
     let html = '';
@@ -296,7 +306,7 @@ export class Renderer {
       const inside = token && token.start <= i;
       const stop = inside ? Math.min(token.end, end) : Math.min(token ? token.start : end, end);
       const segmentEnd = Math.max(stop, i + 1);
-      html += this.segmentHtml(text, layout, i, Math.min(segmentEnd, end), inside ? token.type : 'text');
+      html += this.segmentHtml(text, layout, i, Math.min(segmentEnd, end), inside ? token.type : 'text', ends);
       i = Math.min(segmentEnd, end);
     }
     return html;
@@ -306,45 +316,59 @@ export class Renderer {
    * One run of same-coloured text, sliced further so tabs and wide characters
    * get the explicit widths the layout arithmetic assumes.
    */
-  private segmentHtml(text: string, layout: LineLayout, from: number, to: number, type: string): string {
+  private segmentHtml(
+    text: string,
+    layout: LineLayout,
+    from: number,
+    to: number,
+    type: string,
+    ends: Int32Array | null,
+  ): string {
     const charWidth = this.metrics.charWidth;
+    const cellsAt = (start: number, end: number) => layout.columns[end] - layout.columns[start];
     let out = '';
     let i = from;
 
     while (i < to) {
-      const code = text.charCodeAt(i);
+      // Whole glyphs, so the boxes below can never split one.
+      //
+      // A box per *run* of wide characters has the right total width, but the
+      // glyphs inside it are laid out at the font's own advance — and a
+      // Japanese fallback face advances one em per glyph where the layout
+      // reckons two cells, about 1.2em for a monospace face. That error
+      // compounds: by column 42 the text was painted three characters left of
+      // where the caret model put it.
+      //
+      // A box per *code point* fixes that and breaks emoji instead. A skin
+      // tone, a joiner, a variation selector — boxing those separately hands
+      // the font pieces it can no longer join, so a family turns into a crowd
+      // and a raised hand loses its colour. The glyph is the only unit that
+      // satisfies both.
+      const end = Math.min(endOfCluster(text, i, ends), to);
+      const cells = cellsAt(i, end);
 
-      if (code === 9) {
-        const width = (layout.columns[i + 1] - layout.columns[i]) * charWidth;
-        out += `<span class="pe-tab" style="padding-left:${width.toFixed(3)}px"></span>`;
-        i++;
+      if (text.charCodeAt(i) === 9) {
+        out += `<span class="pe-tab" style="padding-left:${(cells * charWidth).toFixed(3)}px"></span>`;
+        i = end;
         continue;
       }
 
-      const cp = text.codePointAt(i) as number;
-      if (isWideCodePoint(cp)) {
-        // One box per character, not one per run.
-        //
-        // A run-sized box has the right total width, but the glyphs inside it
-        // are laid out at the font's own advance — and a Japanese fallback face
-        // advances one em per glyph while the layout reckons two cells, which
-        // for a monospace face is about 1.2em. The error is invisible for a
-        // word of kana in an English comment and ruinous for a line of
-        // Japanese: by column 48 the caret sits a character and a half past the
-        // text it belongs to, which is what put the view in the wrong place
-        // when scrolling to reveal it. Boxing each character forces every one
-        // of them back onto its own cell.
-        const units = cp > 0xffff ? 2 : 1;
-        out += `<span class="pe-w">${escapeHtml(text.slice(i, i + units))}</span>`;
-        i += units;
+      if (cells !== 1) {
+        // Two cells is the overwhelming case and comes from the stylesheet;
+        // anything else states its width outright.
+        const style = cells === 2 ? '' : ` style="width:${(cells * charWidth).toFixed(3)}px"`;
+        out += `<span class="pe-w"${style}>${escapeHtml(text.slice(i, end))}</span>`;
+        i = end;
         continue;
       }
 
-      let j = i;
+      // Ordinary one-cell glyphs run on to the next tab or wide glyph as plain
+      // text, with no element of their own.
+      let j = end;
       while (j < to) {
-        const next = text.codePointAt(j) as number;
-        if (next === 9 || isWideCodePoint(next)) break;
-        j += next > 0xffff ? 2 : 1;
+        const next = Math.min(endOfCluster(text, j, ends), to);
+        if (text.charCodeAt(j) === 9 || cellsAt(j, next) !== 1) break;
+        j = next;
       }
       out += escapeHtml(text.slice(i, j));
       i = j;

@@ -5,6 +5,7 @@ import {
   pos,
   positionsEqual,
 } from './position.ts';
+import { stepIndex } from '../view/columns.ts';
 
 /** The result of applying an edit — everything undo needs to reverse it. */
 export interface EditResult {
@@ -169,9 +170,11 @@ export class TextBuffer {
   }
 
   /**
-   * Step one code point left/right from `p`, crossing line boundaries.
-   * Code-point-aware so the caret never lands between the halves of a
-   * surrogate pair and corrupts an emoji on the next keystroke.
+   * Step one glyph left/right from `p`, crossing line boundaries.
+   *
+   * A glyph, not a code point: `👨‍👩‍👧` is eight code points and one thing on
+   * screen, and a caret that stops between them would let the next keystroke
+   * cut it into a crowd. This is also what backspace deletes by.
    */
   stepPosition(p: Position, dir: 1 | -1): Position {
     const c = this.clamp(p);
@@ -180,10 +183,7 @@ export class TextBuffer {
         if (c.line === 0) return c;
         return pos(c.line - 1, this.lineLength(c.line - 1));
       }
-      const text = this.line(c.line);
-      const before = text.codePointAt(c.ch - 2);
-      const isPair = c.ch >= 2 && before !== undefined && before > 0xffff;
-      return pos(c.line, c.ch - (isPair ? 2 : 1));
+      return pos(c.line, stepIndex(this.line(c.line), c.ch, -1));
     }
 
     const text = this.line(c.line);
@@ -191,8 +191,7 @@ export class TextBuffer {
       if (c.line >= this.lines.length - 1) return c;
       return pos(c.line + 1, 0);
     }
-    const cp = text.codePointAt(c.ch);
-    return pos(c.line, c.ch + (cp !== undefined && cp > 0xffff ? 2 : 1));
+    return pos(c.line, stepIndex(text, c.ch, 1));
   }
 
   /** True when `a` and `b` denote the same spot. Convenience re-export. */
