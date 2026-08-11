@@ -158,9 +158,19 @@ export class TextInput {
         editor.redo();
         break;
 
-      case 'insertFromPaste':
-        // Handled by the `paste` listener, which has the clipboard data.
+      case 'insertFromPaste': {
+        // Normally the `paste` listener has already taken this and cancelled
+        // it, so reaching here means something pasted without firing one —
+        // Android keyboards do it from their clipboard strip. The text is on
+        // the event either way, and taking it here cannot double up: a paste
+        // the other listener cancelled never produces this event at all.
+        const pasted = event.dataTransfer?.getData('text/plain') ?? event.data;
+        if (pasted) {
+          event.preventDefault();
+          insertText(editor, pasted);
+        }
         break;
+      }
 
       default:
         event.preventDefault();

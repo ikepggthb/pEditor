@@ -9,7 +9,9 @@ import {
   moveWord,
   toggleComment,
 } from '../editor/core/commands.ts';
+import { selectionRange } from '../editor/model/selection.ts';
 import { bindKey } from './holdRepeat.ts';
+import { readClipboard, writeClipboard } from './clipboard.ts';
 
 interface KeyDef {
   label: string;
@@ -77,6 +79,29 @@ export class KeyBar {
     });
 
     return [
+      // First, because they are the reason people reach for this strip at all
+      // once they have a selection.
+      { label: '⧉', title: 'Copy', run: () => void writeClipboard(editor.selectedText) },
+      {
+        label: '✂',
+        title: 'Cut',
+        run: () => {
+          const text = editor.selectedText;
+          if (!text) return;
+          void writeClipboard(text).then((ok) => {
+            if (ok) editor.edit(selectionRange(editor.selection), '', 'delete');
+          });
+        },
+      },
+      {
+        label: '📋',
+        title: 'Paste',
+        run: () => {
+          void readClipboard().then((text) => {
+            if (text) editor.insert(text, 'paste');
+          });
+        },
+      },
       { label: 'Tab', title: 'Tab', wide: true, run: () => insertTab(editor) },
       { label: '⌫', title: 'Backspace', repeat: true, run: () => deleteBackward(editor) },
       { label: '↵', title: 'New line', run: () => insertNewline(editor) },

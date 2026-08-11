@@ -323,17 +323,20 @@ export class Renderer {
 
       const cp = text.codePointAt(i) as number;
       if (isWideCodePoint(cp)) {
-        let j = i;
-        let cells = 0;
-        while (j < to) {
-          const next = text.codePointAt(j) as number;
-          if (!isWideCodePoint(next)) break;
-          cells += 2;
-          j += next > 0xffff ? 2 : 1;
-        }
-        const width = (cells * charWidth).toFixed(3);
-        out += `<span class="pe-w" style="width:${width}px">${escapeHtml(text.slice(i, j))}</span>`;
-        i = j;
+        // One box per character, not one per run.
+        //
+        // A run-sized box has the right total width, but the glyphs inside it
+        // are laid out at the font's own advance — and a Japanese fallback face
+        // advances one em per glyph while the layout reckons two cells, which
+        // for a monospace face is about 1.2em. The error is invisible for a
+        // word of kana in an English comment and ruinous for a line of
+        // Japanese: by column 48 the caret sits a character and a half past the
+        // text it belongs to, which is what put the view in the wrong place
+        // when scrolling to reveal it. Boxing each character forces every one
+        // of them back onto its own cell.
+        const units = cp > 0xffff ? 2 : 1;
+        out += `<span class="pe-w">${escapeHtml(text.slice(i, i + units))}</span>`;
+        i += units;
         continue;
       }
 

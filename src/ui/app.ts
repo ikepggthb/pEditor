@@ -7,6 +7,7 @@ import { LANGUAGES, languageForFilename } from '../editor/syntax/highlighter.ts'
 import { columnAt } from '../editor/view/columns.ts';
 import { KeyBar } from './keybar.ts';
 import { CodeKeyboard } from './keyboard/keyboard.ts';
+import { SelectionMenu } from './selectionMenu.ts';
 import { FrameMeter } from './frameMeter.ts';
 import { h, segmentRow, selectRow, toggleRow } from './dom.ts';
 import { debounce, loadDocument, loadSettings, saveDocument, saveSettings, throttle } from './storage.ts';
@@ -28,6 +29,7 @@ export class App {
   private pinch: PinchZoom;
   private keybar: KeyBar;
   private keyboard: CodeKeyboard;
+  private menu: SelectionMenu;
 
   private root: HTMLDivElement;
   private nameField: HTMLInputElement;
@@ -47,6 +49,8 @@ export class App {
   /** Frame timing readout, off unless asked for — see ui/frameMeter.ts. */
   private frameMeter = new FrameMeter();
   private showFrameRate = localStorage.getItem(FRAME_RATE_KEY) === '1';
+  /** Whether a history entry is parked for the back button to consume. */
+  private backGuard = false;
 
   private readonly host: HTMLElement;
 
@@ -66,6 +70,10 @@ export class App {
       onSystemKeyboard: () => this.setKeyboardMode('system'),
       onHeightChange: (height) => localStorage.setItem(KEYBOARD_HEIGHT_KEY, String(height)),
       initialHeight: Number(localStorage.getItem(KEYBOARD_HEIGHT_KEY)) || undefined,
+    });
+    this.menu = new SelectionMenu(this.editor, {
+      onDone: () => this.input.focus(),
+      isBusy: () => this.handles.isDragging,
     });
 
     this.nameField = h('input', {
@@ -123,7 +131,16 @@ export class App {
     this.handles.attach();
     this.pointer.attach();
     this.pinch.attach();
+    this.menu.attach();
     this.input.setMode(this.keyboardMode);
+
+    // A tap is what asks for the bubble, and the end of a handle drag is what
+    // brings it back — nothing the editor emits marks either, so the gesture's
+    // own end does. By the time this bubbles up from a handle, the drag has
+    // already cleared itself.
+    for (const type of ['pointerup', 'pointercancel'] as const) {
+      editorHost.addEventListener(type, () => this.menu.reveal());
+    }
 
     this.applyTheme();
     this.editor.setLanguage(languageForFilename(this.fileName).id);
@@ -166,6 +183,8 @@ export class App {
       saveSettings(this.editor.config);
     });
 
+    window.addEventListener('popstate', () => this.onPopState());
+
     // The browser may kill the tab without warning; take a last snapshot.
     window.addEventListener('pagehide', () => this.persist());
     document.addEventListener('visibilitychange', () => {
@@ -199,6 +218,38 @@ export class App {
     const custom = this.keyboardMode === 'custom';
     this.keybar.setVisible(active && !custom);
     this.keyboard.setVisible(active && custom);
+    if (active) this.pushBackGuard();
+    else this.dropBackGuard();
+  }
+
+  /**
+   * Make Android's back gesture close the keyboard instead of leaving the page.
+   *
+   * The system button has no event of its own: the only thing a page can react
+   * to is a history entry being popped. So while a keyboard is up there is one
+   * extra entry on the stack for back to consume — and when the keyboard closes
+   * any other way, that entry is spent so it cannot swallow a later back that
+   * really did mean "leave".
+   */
+  private pushBackGuard(): void {
+    if (this.backGuard) return;
+    this.backGuard = true;
+    history.pushState({ pe: 'keyboard' }, '');
+  }
+
+  private dropBackGuard(): void {
+    if (!this.backGuard) return;
+    this.backGuard = false;
+    history.back();
+  }
+
+  private onPopState(): void {
+    // Our entry has already been popped, so clear the flag before closing —
+    // otherwise the close would call `history.back()` and take the real one.
+    if (!this.backGuard) return;
+    this.backGuard = false;
+    this.input.blur();
+    this.syncKeyboards();
   }
 
   private setKeyboardMode(mode: InputMode): void {

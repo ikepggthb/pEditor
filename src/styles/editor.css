@@ -124,8 +124,16 @@
   display: inline;
 }
 
+/* One East Asian character, held to exactly the two cells the layout counts
+   for it. The width comes from the custom property rather than an inline
+   style so the markup stays one short tag per character. */
 .pe-w {
   display: inline-block;
+  width: calc(var(--pe-char-w) * 2);
+  /* Centred, because a full-width glyph advances one em while two monospace
+     cells are nearer 1.2 — left-aligned it would drift visually towards the
+     left of its cell even though the cell itself is correct. */
+  text-align: center;
   /* Overflow stays visible on purpose: an inline-block that clips takes its
      baseline from the box edge instead of the text, which would misalign CJK
      glyphs against the ASCII around them. */
@@ -241,6 +249,51 @@
   inset: 0;
   z-index: 6;
   pointer-events: none;
+}
+
+/* ---------------------------------------------------- cut / copy / paste */
+
+.pe-menu {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 7;
+  display: none;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-raised);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  font-family: var(--ui-font);
+  white-space: nowrap;
+  will-change: transform;
+}
+
+.pe-menu-visible {
+  display: flex;
+}
+
+.pe-menu-item {
+  appearance: none;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 14px;
+  /* Wide enough to hit with a thumb without aiming. */
+  padding: 9px 13px;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.pe-menu-item:active {
+  background: var(--accent-soft);
+}
+
+.pe-menu-item[hidden] {
+  display: none;
 }
 
 .pe-handle {
