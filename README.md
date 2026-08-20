@@ -61,10 +61,27 @@ src/editor/
   syntax/     トークナイザ基盤 + TS/JS・Rust・C・JSON・CSS・HTML・Markdown
   view/       桁計算・折り返しレイアウト・レンダラ
   input/      textarea + IME・キーマップ・タッチ・ハンドル・ピンチ
+src/repo/     Repository Provider — コードの取得元を抽象化
+  github.ts   GitHub public repo（メタデータは REST API、本文は raw）
+  local.ts    端末内だけのファイル
+src/workspace/
+  workspace.ts  開いているファイルと編集内容。provider と store の上
+  store.ts      IndexedDB 永続化
 src/ui/
+  files.ts    ファイルブラウザ
   keyboard/   コード用オンスクリーンキーボード
   …           アプリシェル（トップバー・ステータス・キーバー・設定）
 ```
+
+依存の向きは一方向です。
+
+```
+Editor UI → Workspace → RepositoryProvider → GitHub
+```
+
+エディタは「ファイル」も「リポジトリ」も知りません。Workspace は GitHub を
+知りません。GitHub を知っているのは `src/repo/github.ts` だけで、GitLab や zip
+を足すときに触るのもそこだけです。
 
 ### 全部が「文字セル」の算術に乗っている
 
@@ -152,12 +169,17 @@ npm test      # 65 tests
 
 ## 現状の範囲
 
-**入っているもの** — 編集・選択・Undo/Redo・折り返し・シンタックスハイライト（TS/JS・Rust・C・JSON・CSS・HTML・Markdown）・自動インデント・括弧の自動補完・コメントトグル・行移動/複製・タッチ操作一式・ピンチで文字サイズ変更・コード用キーボード（OS キーボードと切替可）・設定・テーマ・オフライン動作・localStorage への自動保存・ファイルを開く / ダウンロード。
+**入っているもの** — 閲覧 / 編集モードの切替（既定は閲覧）・GitHub public repository をURLで開く・ファイルブラウザ・開いたファイルの IndexedDB 保存と復元・変更マーク・編集・選択・Undo/Redo・折り返し・シンタックスハイライト（TS/JS・Rust・C・JSON・CSS・HTML・Markdown）・自動インデント・括弧の自動補完・コメントトグル・行移動/複製・タッチ操作一式・ピンチで文字サイズ変更・コード用キーボード（OS キーボードと切替可）・設定・テーマ・オフライン動作・ファイルを開く / ダウンロード。
 
-**入っていないもの** — 複数ファイル / タブ / ファイルツリー、Git 連携、検索置換、コード実行・プレビュー、補完、複数カーソル。単一ドキュメントのエディタです。
+**入っていないもの** — GitHub への commit、認証（private repository）、diff 表示、リポジトリ内検索、タブ、複数カーソル、コード実行・プレビュー、補完。
 
 既知の制約:
 
-- 保存先は localStorage 1 ドキュメントのみ。ブラウザのデータを消すと失われます
+- GitHub API は未認証で 1 時間 60 リクエストです。ディレクトリを開くたびに 1
+  回使いますが、**ファイル本文の取得はこの枠を使いません**（raw から取るため）。
+  一度開いたディレクトリとファイルは IndexedDB に残るので再取得もしません
+- Workspace の基準 commit は開いた時点で固定します。ブランチが進んでも自動では
+  追随しません（編集内容の基準が動かないようにするため）
+- ブラウザのデータを消すと編集内容は失われます
 - ハイライトは正規表現ベースのトークナイザで、構文解析はしていません
 - 描画済み行のレイアウトはキャッシュしたまま破棄しないので、巨大ファイルを端から端までスクロールするとメモリが漸増します（2 万行で約 30 MB）

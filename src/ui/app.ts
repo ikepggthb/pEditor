@@ -9,10 +9,14 @@ import { KeyBar } from './keybar.ts';
 import { CodeKeyboard } from './keyboard/keyboard.ts';
 import { SelectionMenu } from './selectionMenu.ts';
 import { FrameMeter } from './frameMeter.ts';
+import { FilePanel } from './files.ts';
 import { h, segmentRow, selectRow, toggleRow } from './dom.ts';
-import { debounce, loadDocument, loadSettings, saveDocument, saveSettings, throttle } from './storage.ts';
+import { debounce, loadDocument, loadSettings, saveSettings, throttle } from './storage.ts';
 import { lockDocumentScroll, trackVisualViewport } from './viewport.ts';
 import { SAMPLE_FILENAME, SAMPLE_TEXT } from './sample.ts';
+import { baseName, parentPath, parseRepositoryUrl, RepositoryError } from '../repo/index.ts';
+import { Workspace } from '../workspace/workspace.ts';
+import { WorkspaceStore } from '../workspace/store.ts';
 
 type Theme = 'auto' | 'dark' | 'light';
 /** Reading or writing. Reading is what this is mostly for. */
@@ -33,6 +37,7 @@ export class App {
   private keybar: KeyBar;
   private keyboard: CodeKeyboard;
   private menu: SelectionMenu;
+  private files: FilePanel;
 
   private root: HTMLDivElement;
   private nameField: HTMLInputElement;
@@ -44,7 +49,14 @@ export class App {
   private undoButton: HTMLButtonElement;
   private redoButton: HTMLButtonElement;
   private modeButton: HTMLButtonElement;
+  private dirtyMark: HTMLElement;
   private editOnlyRows: HTMLElement[] = [];
+
+  /** Where opened files and edits live; see workspace/workspace.ts. */
+  private store = new WorkspaceStore();
+  private workspace: Workspace | null = null;
+  /** Path of the file on screen, within the workspace. */
+  private activePath: string | null = null;
 
   private fileName: string;
   private theme: Theme = (localStorage.getItem(THEME_KEY) as Theme) ?? 'auto';
@@ -66,8 +78,13 @@ export class App {
     const saved = loadDocument();
     const settings = loadSettings() ?? {};
 
-    this.fileName = saved?.name ?? SAMPLE_FILENAME;
-    this.editor = new Editor(saved?.text ?? SAMPLE_TEXT, { ...DEFAULT_CONFIG, ...settings });
+    // The document arrives from IndexedDB a moment after mount, so the editor
+    // starts empty rather than showing something that is about to be replaced.
+    // `saved` is only consulted to migrate a document written by the version
+    // that kept one in localStorage.
+    void saved;
+    this.fileName = SAMPLE_FILENAME;
+    this.editor = new Editor('', { ...DEFAULT_CONFIG, ...settings });
     this.input = new TextInput(this.editor);
     this.handles = new SelectionHandles(this.editor, () => this.input.syncPosition());
     this.pointer = new PointerInput(this.editor, this.input, this.handles);
@@ -82,6 +99,11 @@ export class App {
       onDone: () => this.input.focus(),
       isBusy: () => this.handles.isDragging,
     });
+    this.files = new FilePanel({
+      onOpenRepository: (url) => this.openRepository(url),
+      onOpenFile: (path) => this.showFile(path),
+      onVisibilityChange: () => this.syncBackGuard(),
+    });
 
     this.nameField = h('input', {
       class: 'topbar-name',
@@ -94,6 +116,7 @@ export class App {
     this.redoButton = h('button', { type: 'button', class: 'icon-btn', title: 'Redo', text: '↷' }) as HTMLButtonElement;
     this.modeButton = h('button', { type: 'button', class: 'mode-btn' }) as HTMLButtonElement;
 
+    this.dirtyMark = h('span', { class: 'topbar-dirty', title: 'Unsaved changes', text: '●', hidden: true });
     this.statusPosition = h('span', { class: 'status-item', text: 'Ln 1, Col 1' });
     this.statusLanguage = h('span', { class: 'status-item status-language' });
     this.statusSize = h('span', { class: 'status-item status-size' });
@@ -104,11 +127,14 @@ export class App {
   }
 
   mount(): void {
+    const filesButton = h('button', { type: 'button', class: 'icon-btn', title: 'Files', text: '☰' });
     const menuButton = h('button', { type: 'button', class: 'icon-btn', title: 'Settings', text: '⋯' });
     const keyboardButton = h('button', { type: 'button', class: 'icon-btn', title: 'Hide keyboard', text: '⌄' });
 
     const topbar = h('header', { class: 'topbar' }, [
+      filesButton,
       this.nameField,
+      this.dirtyMark,
       this.undoButton,
       this.redoButton,
       this.modeButton,
@@ -131,6 +157,7 @@ export class App {
       statusbar,
       this.keybar.element,
       this.keyboard.element,
+      this.files.element,
       this.sheet,
     );
     this.host.appendChild(this.root);
@@ -157,6 +184,7 @@ export class App {
     this.applyMode();
 
     menuButton.addEventListener('click', () => this.openSheet());
+    filesButton.addEventListener('click', () => this.toggleFiles());
     this.modeButton.addEventListener('click', () => {
       this.setMode(this.mode === 'view' ? 'edit' : 'view');
     });
@@ -173,21 +201,19 @@ export class App {
     });
 
     this.nameField.addEventListener('change', () => {
-      this.fileName = this.nameField.value.trim() || 'untitled.txt';
-      this.nameField.value = this.fileName;
-      this.editor.setLanguage(languageForFilename(this.fileName).id);
-      this.updateStatus();
-      this.persist();
+      void this.rename(this.nameField.value.trim() || 'untitled.txt');
     });
     this.nameField.addEventListener('keydown', (event) => {
       if (event.key === 'Enter') this.nameField.blur();
     });
 
-    const persist = debounce(() => this.persist(), 900);
+    // `getValue()` walks the whole buffer, so it is not something to do per
+    // keystroke; the workspace then debounces the write to IndexedDB again.
+    const sync = debounce(() => this.syncToWorkspace(), 400);
     this.editor.on('change', () => {
       this.updateStatus();
       this.updateSize();
-      persist();
+      sync();
     });
     this.editor.on('selection', () => this.updateStatus());
     this.editor.on('focus', () => this.syncKeyboards());
@@ -199,9 +225,9 @@ export class App {
     window.addEventListener('popstate', () => this.onPopState());
 
     // The browser may kill the tab without warning; take a last snapshot.
-    window.addEventListener('pagehide', () => this.persist());
+    window.addEventListener('pagehide', () => this.flush());
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'hidden') this.persist();
+      if (document.visibilityState === 'hidden') this.flush();
     });
 
     lockDocumentScroll();
@@ -210,6 +236,145 @@ export class App {
     this.applyFrameRate();
     this.updateStatus();
     this.updateSize();
+    void this.boot();
+  }
+
+  // -------------------------------------------------------------- workspace
+
+  /**
+   * Bring back whatever was being worked on.
+   *
+   * Restoring is the normal path, not the exception: a phone discards tabs
+   * without asking, and the edits in a workspace exist nowhere else.
+   */
+  private async boot(): Promise<void> {
+    let workspace: Workspace | null = null;
+    try {
+      workspace = await Workspace.restoreLast(this.store);
+    } catch {
+      workspace = null;
+    }
+    if (!workspace) {
+      try {
+        workspace = await Workspace.open({ provider: 'local' }, this.store);
+      } catch {
+        // No IndexedDB at all. The editor still works; nothing will persist.
+        this.editor.setValue(SAMPLE_TEXT, SAMPLE_FILENAME);
+        return;
+      }
+    }
+    await this.adopt(workspace);
+  }
+
+  private async adopt(workspace: Workspace): Promise<void> {
+    this.workspace = workspace;
+    this.files.setWorkspace(workspace, workspace.active ? parentPath(workspace.active) : '');
+
+    if (workspace.active) {
+      try {
+        await this.showFile(workspace.active);
+        return;
+      } catch {
+        // The file has gone from the repository, or we are offline and never
+        // had it. Fall through to an empty workspace rather than failing boot.
+      }
+    }
+    if (workspace.repository.provider === 'local') await this.seedLocal(workspace);
+    else this.files.show();
+  }
+
+  /**
+   * First run, or a local workspace with nothing in it yet.
+   *
+   * A document written by the version that kept one in localStorage is carried
+   * over here, once — losing someone's notes on an upgrade is not acceptable
+   * just because the storage moved.
+   */
+  private async seedLocal(workspace: Workspace): Promise<void> {
+    const legacy = loadDocument();
+    const name = legacy?.name ?? SAMPLE_FILENAME;
+    const text = legacy?.text ?? SAMPLE_TEXT;
+    await workspace.addFile(name, text, legacy ? text : text);
+    await this.showFile(name);
+  }
+
+  /** Open a GitHub repository and show its root. */
+  private async openRepository(url: string): Promise<void> {
+    const ref = parseRepositoryUrl(url);
+    if (!ref) throw new RepositoryError('unsupported', 'That does not look like a GitHub repository URL.');
+    const workspace = await Workspace.open(ref, this.store);
+    this.workspace = workspace;
+    this.files.setWorkspace(workspace, ref.path ? parentPath(ref.path) : '');
+    if (ref.path) await this.showFile(ref.path);
+  }
+
+  /** Put a file from the workspace on screen. */
+  private async showFile(path: string): Promise<void> {
+    const workspace = this.workspace;
+    if (!workspace) return;
+    const file = await workspace.openFile(path);
+
+    this.activePath = path;
+    this.fileName = baseName(path);
+    this.nameField.value = this.fileName;
+    // A repository file is named by the repository; only a local scratch file
+    // is something the user gets to rename here.
+    this.nameField.readOnly = workspace.repository.provider !== 'local' || this.mode !== 'edit';
+
+    this.editor.setValue(file.content, this.fileName);
+    this.editor.renderer.scroller.scrollTop = 0;
+    this.updateStatus();
+    this.updateSize();
+    this.files.refresh();
+  }
+
+  /**
+   * Put a document into the on-device workspace and show it.
+   *
+   * Opening a file from the device or starting a new one is a different
+   * repository from whatever GitHub project may be open, so it switches to the
+   * local workspace rather than pretending the file belongs to the project.
+   */
+  private async openLocalFile(name: string, text: string): Promise<void> {
+    const workspace = await Workspace.open({ provider: 'local' }, this.store);
+    this.workspace = workspace;
+    this.files.setWorkspace(workspace);
+    await workspace.addFile(name, text, text);
+    await this.showFile(name);
+  }
+
+  /** Rename a local scratch file. Repository files are named by the repository. */
+  private async rename(name: string): Promise<void> {
+    const workspace = this.workspace;
+    if (!workspace || workspace.repository.provider !== 'local' || !this.activePath) {
+      this.nameField.value = this.fileName;
+      return;
+    }
+    if (name === this.activePath) return;
+    await workspace.addFile(name, this.editor.getValue(), workspace.file(this.activePath)?.original ?? '');
+    await this.showFile(name);
+  }
+
+  private syncToWorkspace(): void {
+    if (!this.workspace || !this.activePath) return;
+    this.workspace.setContent(this.activePath, this.editor.getValue());
+    this.updateStatus();
+    this.files.refresh();
+  }
+
+  private flush(): void {
+    this.syncToWorkspace();
+    this.workspace?.flush();
+  }
+
+  private toggleFiles(): void {
+    if (this.files.isOpen) {
+      this.files.hide();
+    } else {
+      this.closeSheet();
+      this.files.show();
+    }
+    this.syncBackGuard();
   }
 
   /** Show or hide the frame-timing readout, and start/stop measuring. */
@@ -259,7 +424,7 @@ export class App {
     // Undo has nothing to undo while viewing, and renaming a file is an edit.
     this.undoButton.hidden = !editing;
     this.redoButton.hidden = !editing;
-    this.nameField.readOnly = !editing;
+    this.nameField.readOnly = !editing || this.workspace?.repository.provider !== 'local';
 
     for (const row of this.editOnlyRows) row.hidden = !editing;
 
@@ -273,29 +438,26 @@ export class App {
     const custom = this.keyboardMode === 'custom';
     this.keybar.setVisible(active && !custom);
     this.keyboard.setVisible(active && custom);
-    if (active) this.pushBackGuard();
-    else this.dropBackGuard();
+    void active;
+    this.syncBackGuard();
   }
 
   /**
-   * Make Android's back gesture close the keyboard instead of leaving the page.
+   * Make Android's back gesture dismiss what is on top instead of leaving.
    *
    * The system button has no event of its own: the only thing a page can react
-   * to is a history entry being popped. So while a keyboard is up there is one
-   * extra entry on the stack for back to consume — and when the keyboard closes
-   * any other way, that entry is spent so it cannot swallow a later back that
-   * really did mean "leave".
+   * to is a history entry being popped. So whenever something is up that back
+   * ought to close — a keyboard, the file browser — there is one extra entry on
+   * the stack for it to consume, and when that thing closes any other way the
+   * entry is spent so it cannot swallow a later back that really did mean
+   * "leave".
    */
-  private pushBackGuard(): void {
-    if (this.backGuard) return;
-    this.backGuard = true;
-    history.pushState({ pe: 'keyboard' }, '');
-  }
-
-  private dropBackGuard(): void {
-    if (!this.backGuard) return;
-    this.backGuard = false;
-    history.back();
+  private syncBackGuard(): void {
+    const wanted = this.files.isOpen || (this.editor.isFocused && this.mode === 'edit');
+    if (wanted === this.backGuard) return;
+    this.backGuard = wanted;
+    if (wanted) history.pushState({ pe: 'overlay' }, '');
+    else history.back();
   }
 
   private onPopState(): void {
@@ -303,8 +465,16 @@ export class App {
     // otherwise the close would call `history.back()` and take the real one.
     if (!this.backGuard) return;
     this.backGuard = false;
-    this.input.blur();
-    this.syncKeyboards();
+
+    // Innermost first: inside the file browser, back walks up a directory
+    // before it closes the browser, which is what the button means there.
+    if (this.files.isOpen) {
+      if (!this.files.goUp()) this.files.hide();
+    } else {
+      this.input.blur();
+      this.syncKeyboards();
+    }
+    this.syncBackGuard();
   }
 
   private setKeyboardMode(mode: InputMode): void {
@@ -317,14 +487,7 @@ export class App {
     this.syncKeyboards();
   }
 
-  private persist(): void {
-    saveDocument({
-      name: this.fileName,
-      text: this.editor.getValue(),
-      languageId: this.editor.language.id,
-      savedAt: Date.now(),
-    });
-  }
+
 
   /** Cheap enough to run on every keystroke and cursor move. */
   private updateStatus(): void {
@@ -339,6 +502,8 @@ export class App {
       this.statusPosition.textContent = `${lines.toLocaleString()} ${lines === 1 ? 'line' : 'lines'}`;
     }
     this.statusLanguage.textContent = this.editor.language.name;
+    const modified = this.activePath ? this.workspace?.statusOf(this.activePath) === 'modified' : false;
+    this.dirtyMark.hidden = !modified;
 
     this.undoButton.disabled = !this.editor.history.canUndo;
     this.redoButton.disabled = !this.editor.history.canRedo;
@@ -434,10 +599,7 @@ export class App {
       const file = fileInput.files?.[0];
       if (!file) return;
       const text = await file.text();
-      this.fileName = file.name;
-      this.nameField.value = file.name;
-      this.editor.setValue(text, file.name);
-      this.persist();
+      await this.openLocalFile(file.name, text);
       this.closeSheet();
     });
 
@@ -498,11 +660,7 @@ export class App {
         this.actionButton('Copy all', () => void navigator.clipboard?.writeText(this.editor.getValue())),
         this.actionButton('New', () => {
           if (!confirm('Discard the current document?')) return;
-          this.fileName = 'untitled.txt';
-          this.nameField.value = this.fileName;
-          this.editor.setValue('', this.fileName);
-          this.persist();
-          this.closeSheet();
+          void this.openLocalFile('untitled.txt', '').then(() => this.closeSheet());
         }),
       ]),
 
