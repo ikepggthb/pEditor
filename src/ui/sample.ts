@@ -1,16 +1,23 @@
 export const SAMPLE_FILENAME = 'welcome.ts';
 
-/** First-run document. Doubles as a quick tour of what the editor handles. */
-export const SAMPLE_TEXT = `// pEditor — スマホでコードを書くためのエディタ
+/** First-run document. Doubles as a quick tour of what the app handles. */
+export const SAMPLE_TEXT = `// pEditor — スマホでコードを読むためのビュアー
 //
-// 使い方:
-//   タップ            キャレットを置く（下のハンドルをドラッグで微調整）
-//   ダブルタップ      単語を選択 / トリプルタップで行を選択
-//   長押し            単語を選択してハンドルを表示
+// 起動時は「閲覧モード」です。キーボードは出ず、文字も変わりません。
+// 書き替えたいときだけ右上の Edit を押します。
+//
+// 閲覧モード:
+//   スワイプ          スクロール
 //   ピンチ            文字サイズを変える（ページ全体は拡大しません）
+//   ダブルタップ      単語を選択 / トリプルタップで行を選択
+//   長押し            単語を選択 → Copy でコピー
+//   ⋯ メニュー        折り返し・行番号・テーマ・ファイルを開く
+//
+// 編集モード（Edit）:
+//   タップ            キャレットを置く（下のハンドルをドラッグで微調整）
 //   ⌨ キー           OS のキーボードに切替（日本語入力はこちら）
 //   #+= キー          記号レイヤー（括弧・演算子・-> => :: != ==）
-//   ⋯ メニュー        折り返し・行番号・テーマ・キーボードの切替
+//   Done              閲覧モードに戻る
 
 interface Task {
   id: number;

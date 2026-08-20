@@ -10,6 +10,8 @@ interface Item {
   label: string;
   /** Shown only when there is something selected. */
   needsSelection?: boolean;
+  /** Changes the text, so hidden while the document is only being viewed. */
+  edits?: boolean;
   run: () => void | Promise<void>;
 }
 
@@ -62,6 +64,7 @@ export class SelectionMenu {
       {
         label: 'Cut',
         needsSelection: true,
+        edits: true,
         run: async () => {
           const text = editor.selectedText;
           if (await writeClipboard(text)) editor.edit(selectionRange(editor.selection), '', 'delete');
@@ -74,6 +77,7 @@ export class SelectionMenu {
       },
       {
         label: 'Paste',
+        edits: true,
         run: async () => {
           const text = await readClipboard();
           if (text) editor.insert(text, 'paste');
@@ -144,12 +148,21 @@ export class SelectionMenu {
     const selection = editor.selection;
     const empty = selectionIsEmpty(selection);
 
+    // Nothing to offer at a bare caret in a viewer: there is no paste, and
+    // Select all on its own is not worth a bubble over the text.
+    if (empty && editor.readOnly) {
+      this.element.classList.remove('pe-menu-visible');
+      return;
+    }
     if (!this.wanted || !editor.isFocused || this.suppressed || this.isBusy()) {
       this.element.classList.remove('pe-menu-visible');
       return;
     }
 
-    for (const { node, item } of this.buttons) node.hidden = Boolean(item.needsSelection) && empty;
+    for (const { node, item } of this.buttons) {
+      node.hidden =
+        (Boolean(item.needsSelection) && empty) || (Boolean(item.edits) && editor.readOnly);
+    }
 
     // With a selection the bubble stays for as long as the selection does. With
     // only a caret it is a paste offer, and an offer that never goes away is

@@ -190,7 +190,10 @@ export class TextInput {
 
   /** Open the on-screen keyboard. Must run inside a user gesture on iOS. */
   focus(): void {
-    if (this.mode === 'custom') {
+    // Viewing: the editor is the active surface and can hold a selection to
+    // copy from, but asking the platform for a keyboard would be asking for
+    // half the screen to type into something that will not accept typing.
+    if (this.mode === 'custom' || this.editor.readOnly) {
       // Keep the caret alive without asking the platform for its keyboard.
       this.editor.setFocused(true);
       this.syncPosition();

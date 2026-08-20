@@ -15,7 +15,10 @@ import { lockDocumentScroll, trackVisualViewport } from './viewport.ts';
 import { SAMPLE_FILENAME, SAMPLE_TEXT } from './sample.ts';
 
 type Theme = 'auto' | 'dark' | 'light';
+/** Reading or writing. Reading is what this is mostly for. */
+type Mode = 'view' | 'edit';
 const THEME_KEY = 'peditor.theme.v1';
+const MODE_KEY = 'peditor.mode.v1';
 const KEYBOARD_KEY = 'peditor.keyboard.v1';
 const KEYBOARD_HEIGHT_KEY = 'peditor.keyboardHeight.v1';
 const FRAME_RATE_KEY = 'peditor.frameRate.v1';
@@ -40,12 +43,16 @@ export class App {
   private sheet: HTMLDivElement;
   private undoButton: HTMLButtonElement;
   private redoButton: HTMLButtonElement;
+  private modeButton: HTMLButtonElement;
+  private editOnlyRows: HTMLElement[] = [];
 
   private fileName: string;
   private theme: Theme = (localStorage.getItem(THEME_KEY) as Theme) ?? 'auto';
   /** Which keyboard the editor uses. The code keyboard is the default; the
    *  platform one is a tap away and is the only one that can run an IME. */
   private keyboardMode: InputMode = (localStorage.getItem(KEYBOARD_KEY) as InputMode) ?? 'custom';
+  /** Viewing by default: this is a reader that can also edit, not the reverse. */
+  private mode: Mode = (localStorage.getItem(MODE_KEY) as Mode) ?? 'view';
   /** Frame timing readout, off unless asked for — see ui/frameMeter.ts. */
   private frameMeter = new FrameMeter();
   private showFrameRate = localStorage.getItem(FRAME_RATE_KEY) === '1';
@@ -85,6 +92,7 @@ export class App {
 
     this.undoButton = h('button', { type: 'button', class: 'icon-btn', title: 'Undo', text: '↶' }) as HTMLButtonElement;
     this.redoButton = h('button', { type: 'button', class: 'icon-btn', title: 'Redo', text: '↷' }) as HTMLButtonElement;
+    this.modeButton = h('button', { type: 'button', class: 'mode-btn' }) as HTMLButtonElement;
 
     this.statusPosition = h('span', { class: 'status-item', text: 'Ln 1, Col 1' });
     this.statusLanguage = h('span', { class: 'status-item status-language' });
@@ -103,6 +111,7 @@ export class App {
       this.nameField,
       this.undoButton,
       this.redoButton,
+      this.modeButton,
       menuButton,
     ]);
 
@@ -145,8 +154,12 @@ export class App {
     this.applyTheme();
     this.editor.setLanguage(languageForFilename(this.fileName).id);
     this.buildSheet();
+    this.applyMode();
 
     menuButton.addEventListener('click', () => this.openSheet());
+    this.modeButton.addEventListener('click', () => {
+      this.setMode(this.mode === 'view' ? 'edit' : 'view');
+    });
     keyboardButton.addEventListener('click', () => this.input.blur());
     this.undoButton.addEventListener('pointerdown', (event) => {
       event.preventDefault();
@@ -212,9 +225,51 @@ export class App {
     });
   }
 
+  // ------------------------------------------------------------------- modes
+
+  /**
+   * Switch between reading and writing.
+   *
+   * Reading is the default and the point of the thing; editing is a mode you
+   * step into. What that buys is mostly the absence of an editor: no keyboard
+   * taking half the screen the moment a finger lands, no caret blinking in a
+   * document nobody is typing into, and no way to change a file by accident
+   * while scrolling through it.
+   */
+  private setMode(mode: Mode): void {
+    if (this.mode === mode) return;
+    this.mode = mode;
+    localStorage.setItem(MODE_KEY, mode);
+    this.applyMode();
+    // Editing is asked for by a tap, so the keyboard can be opened from inside
+    // it — which is the only way iOS will ever open one.
+    if (mode === 'edit') this.input.focus();
+    else this.input.blur();
+  }
+
+  private applyMode(): void {
+    const editing = this.mode === 'edit';
+    this.editor.setReadOnly(!editing);
+    this.root.classList.toggle('app-viewing', !editing);
+
+    this.modeButton.textContent = editing ? 'Done' : 'Edit';
+    this.modeButton.title = editing ? 'Finish editing' : 'Edit this file';
+    this.modeButton.classList.toggle('mode-btn-active', editing);
+
+    // Undo has nothing to undo while viewing, and renaming a file is an edit.
+    this.undoButton.hidden = !editing;
+    this.redoButton.hidden = !editing;
+    this.nameField.readOnly = !editing;
+
+    for (const row of this.editOnlyRows) row.hidden = !editing;
+
+    this.syncKeyboards();
+    this.updateStatus();
+  }
+
   /** Show whichever keyboard is selected, and only while the editor is active. */
   private syncKeyboards(): void {
-    const active = this.editor.isFocused;
+    const active = this.editor.isFocused && this.mode === 'edit';
     const custom = this.keyboardMode === 'custom';
     this.keybar.setVisible(active && !custom);
     this.keyboard.setVisible(active && custom);
@@ -273,9 +328,16 @@ export class App {
 
   /** Cheap enough to run on every keystroke and cursor move. */
   private updateStatus(): void {
-    const head = this.editor.selection.head;
-    const column = columnAt(this.editor.buffer.line(head.line), head.ch, this.editor.config.tabSize) + 1;
-    this.statusPosition.textContent = `Ln ${head.line + 1}, Col ${column}`;
+    if (this.mode === 'edit') {
+      const head = this.editor.selection.head;
+      const column = columnAt(this.editor.buffer.line(head.line), head.ch, this.editor.config.tabSize) + 1;
+      this.statusPosition.textContent = `Ln ${head.line + 1}, Col ${column}`;
+    } else {
+      // A caret position means nothing without a caret; the length of what you
+      // are reading does.
+      const lines = this.editor.buffer.lineCount;
+      this.statusPosition.textContent = `${lines.toLocaleString()} ${lines === 1 ? 'line' : 'lines'}`;
+    }
     this.statusLanguage.textContent = this.editor.language.name;
 
     this.undoButton.disabled = !this.editor.history.canUndo;
@@ -388,11 +450,6 @@ export class App {
     this.sheet.append(
       grip,
 
-      segmentRow('Keyboard', [
-        { value: 'custom', label: 'Code' },
-        { value: 'system', label: 'System' },
-      ], this.keyboardMode, (value) => this.setKeyboardMode(value as InputMode)),
-
       selectRow(
         'Language',
         LANGUAGES.map((language) => ({ value: language.id, label: language.name })),
@@ -408,12 +465,6 @@ export class App {
         localStorage.setItem(THEME_KEY, value);
         this.applyTheme();
       }),
-      segmentRow('Tab size', [
-        { value: '2', label: '2' },
-        { value: '4', label: '4' },
-        { value: '8', label: '8' },
-      ], String(config.tabSize), (value) => set({ tabSize: Number(value) })),
-
       h('div', { class: 'sheet-row' }, [
         h('span', { text: 'Font size' }),
         h('div', { class: 'stepper' }, [smaller, fontValue, larger]),
@@ -421,9 +472,20 @@ export class App {
 
       toggleRow('Word wrap', config.wordWrap, (value) => set({ wordWrap: value })),
       toggleRow('Line numbers', config.lineNumbers, (value) => set({ lineNumbers: value })),
-      toggleRow('Insert spaces', config.insertSpaces, (value) => set({ insertSpaces: value })),
-      toggleRow('Auto-close brackets', config.autoCloseBrackets, (value) => set({ autoCloseBrackets: value })),
-      toggleRow('Auto indent', config.autoIndent, (value) => set({ autoIndent: value })),
+      ...this.editOnly([
+        segmentRow('Keyboard', [
+          { value: 'custom', label: 'Code' },
+          { value: 'system', label: 'System' },
+        ], this.keyboardMode, (value) => this.setKeyboardMode(value as InputMode)),
+        segmentRow('Tab size', [
+          { value: '2', label: '2' },
+          { value: '4', label: '4' },
+          { value: '8', label: '8' },
+        ], String(config.tabSize), (value) => set({ tabSize: Number(value) })),
+        toggleRow('Insert spaces', config.insertSpaces, (value) => set({ insertSpaces: value })),
+        toggleRow('Auto-close brackets', config.autoCloseBrackets, (value) => set({ autoCloseBrackets: value })),
+        toggleRow('Auto indent', config.autoIndent, (value) => set({ autoIndent: value })),
+      ]),
       toggleRow('Show frame rate', this.showFrameRate, (value) => {
         this.showFrameRate = value;
         localStorage.setItem(FRAME_RATE_KEY, value ? '1' : '0');
@@ -447,6 +509,12 @@ export class App {
       this.actionButton('Close', () => this.closeSheet(), 'sheet-close'),
       fileInput,
     );
+  }
+
+  /** Remember these rows so they can be hidden when there is no editing to do. */
+  private editOnly(rows: HTMLElement[]): HTMLElement[] {
+    this.editOnlyRows.push(...rows);
+    return rows;
   }
 
   private actionButton(label: string, onClick: () => void, className = 'sheet-action'): HTMLElement {

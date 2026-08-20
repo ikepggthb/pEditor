@@ -69,6 +69,46 @@
   opacity: 0.4;
 }
 
+.icon-btn[hidden] {
+  display: none;
+}
+
+/* The one control that changes what the app is for, so it says so in words. */
+.mode-btn {
+  flex: none;
+  height: 34px;
+  padding: 0 14px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--fg);
+  font-family: var(--ui-font);
+  font-size: 14px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.mode-btn:active {
+  background: var(--bg-sunken);
+}
+
+.mode-btn-active {
+  border-color: transparent;
+  background: var(--accent);
+  color: var(--bg);
+}
+
+/* Reading: the file name is a label, not a field, and there is no keyboard to
+   put away. */
+.app-viewing .topbar-name {
+  border-color: transparent;
+  background: transparent;
+}
+
+.app-viewing .statusbar .icon-btn {
+  display: none;
+}
+
 /* ------------------------------------------------------------------- editor */
 
 .editor-host {
@@ -354,6 +394,12 @@
   min-height: 46px;
   border-bottom: 1px solid var(--border);
   font-size: 14px;
+}
+
+/* `display` here beats the browser's own rule for the `hidden` attribute, so
+   the rows that only apply while editing need it said again. */
+.sheet-row[hidden] {
+  display: none;
 }
 
 .sheet-select {

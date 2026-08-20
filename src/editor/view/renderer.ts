@@ -18,6 +18,8 @@ export interface RenderInput {
   scrollTop: number;
   viewportHeight: number;
   focused: boolean;
+  /** Whether an insertion point should be drawn. Off while viewing. */
+  showCaret: boolean;
   showLineNumbers: boolean;
 }
 
@@ -102,7 +104,9 @@ export class Renderer {
    * extends well past the viewport — the caller can skip the render entirely
    * and leave the frame to the compositor.
    */
-  scrollNeedsRepaint(input: Omit<RenderInput, 'selection' | 'composition' | 'focused'>): boolean {
+  scrollNeedsRepaint(
+    input: Omit<RenderInput, 'selection' | 'composition' | 'focused' | 'showCaret'>,
+  ): boolean {
     if (this.scroller.scrollLeft !== this.lastScrollLeft) return true;
 
     const lineHeight = this.metrics.lineHeight;
@@ -480,7 +484,7 @@ export class Renderer {
   }
 
   private renderCaret(input: RenderInput): void {
-    const visible = input.focused && selectionIsEmpty(input.selection);
+    const visible = input.showCaret && selectionIsEmpty(input.selection);
     this.caret.classList.toggle('pe-caret-visible', visible);
     this.setStyle(this.caret, 'height', `${this.metrics.lineHeight}px`);
 

@@ -70,6 +70,8 @@ export class Editor {
   private renderScheduled = false;
   private pendingScrollToCaret = false;
   private focused = false;
+  /** Viewing rather than editing: no caret, and nothing may change the text. */
+  private readOnlyMode = false;
   /** Column the caret aims for while moving vertically through short lines. */
   private goalColumn: number | null = null;
   /** Cached scroller height. Reading it during a scroll would be a layout read
@@ -228,8 +230,31 @@ export class Editor {
       scrollTop: this.renderer.scroller.scrollTop,
       viewportHeight: this.viewportHeight,
       focused: this.focused,
+      // Focused and showing a caret are different things now: a viewer is the
+      // active surface, and can hold a selection to copy from, but has no
+      // insertion point because there is no way to insert anything.
+      showCaret: this.focused && !this.readOnlyMode,
       showLineNumbers: this.config.lineNumbers,
     });
+  }
+
+  /**
+   * Whether the document is being viewed rather than edited.
+   *
+   * Enforced in `edit`, which is the only path that changes the text — so keys,
+   * the IME, paste, the on-screen keyboard and undo are all covered by the one
+   * check rather than each having to remember.
+   */
+  get readOnly(): boolean {
+    return this.readOnlyMode;
+  }
+
+  setReadOnly(value: boolean): void {
+    if (this.readOnlyMode === value) return;
+    this.readOnlyMode = value;
+    this.cancelComposition();
+    this.scheduleRender();
+    this.emit('config');
   }
 
   setFocused(value: boolean): void {
@@ -346,6 +371,14 @@ export class Editor {
    * through here so layout invalidation, highlighting, and undo stay in step.
    */
   edit(range: TextRange, text: string, origin: EditOrigin = 'command'): EditResult {
+    if (this.readOnlyMode) {
+      // Report the range as it stands, unchanged. Callers get a well-formed
+      // result and the document is untouched.
+      const clamped = this.buffer.clampRange(range);
+      const unchanged = this.buffer.getText(clamped);
+      return { replaced: clamped, removed: unchanged, inserted: unchanged, insertedRange: clamped };
+    }
+
     const selBefore = this.sel;
     const result = this.buffer.replace(range, text);
     if (result.removed === result.inserted) return result;
@@ -377,11 +410,13 @@ export class Editor {
   }
 
   undo(): void {
+    if (this.readOnlyMode) return;
     const restored = this.history.undo((range, text) => this.applyHistoryEdit(range, text));
     if (restored) this.setSelection(restored);
   }
 
   redo(): void {
+    if (this.readOnlyMode) return;
     const restored = this.history.redo((range, text) => this.applyHistoryEdit(range, text));
     if (restored) this.setSelection(restored);
   }
