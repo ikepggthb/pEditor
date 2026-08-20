@@ -14,6 +14,7 @@ import { h, segmentRow, selectRow, toggleRow } from './dom.ts';
 import { debounce, loadDocument, loadSettings, saveSettings, throttle } from './storage.ts';
 import { lockDocumentScroll, trackVisualViewport } from './viewport.ts';
 import { SAMPLE_FILENAME, SAMPLE_TEXT } from './sample.ts';
+import { isMarkdown, renderMarkdown } from './markdown.ts';
 import { baseName, parentPath, parseRepositoryUrl, RepositoryError } from '../repo/index.ts';
 import { Workspace } from '../workspace/workspace.ts';
 import { WorkspaceStore } from '../workspace/store.ts';
@@ -26,6 +27,31 @@ const MODE_KEY = 'peditor.mode.v1';
 const KEYBOARD_KEY = 'peditor.keyboard.v1';
 const KEYBOARD_HEIGHT_KEY = 'peditor.keyboardHeight.v1';
 const FRAME_RATE_KEY = 'peditor.frameRate.v1';
+const READER_KEY = 'peditor.reader.v1';
+
+/**
+ * Force the text presentation of a glyph.
+ *
+ * Several of these have an emoji form, and a platform that picks it drops a
+ * colour cartoon into a row of grey line symbols. U+FE0E asks for the text one.
+ */
+function textGlyph(glyph: string): string {
+  return `${glyph}\uFE0E`;
+}
+
+/** One item of the bottom bar: a glyph with its name under it, as a tab bar. */
+function toolButton(label: string, glyph: string, title: string): HTMLButtonElement {
+  const node = h('button', { type: 'button', class: 'tool', title, 'data-tool': title }, [
+    h('span', { class: 'tool-glyph', text: textGlyph(glyph) }),
+    h('span', { class: 'tool-label', text: label }),
+  ]) as HTMLButtonElement;
+  // Taking focus here would blur the editor, which hides the key bar, which
+  // moves this button out from under the finger that is still on it — and the
+  // tap is then lost between `mousedown` and a `mouseup` that lands somewhere
+  // else. Cancelling the default keeps focus where it is and the bar still.
+  node.addEventListener('mousedown', (event) => event.preventDefault());
+  return node;
+}
 
 /** The application shell: chrome around the editor, plus what persists. */
 export class App {
@@ -50,6 +76,9 @@ export class App {
   private redoButton: HTMLButtonElement;
   private modeButton: HTMLButtonElement;
   private dirtyMark: HTMLElement;
+  private subtitle: HTMLElement;
+  private toolbar: HTMLElement;
+  private readerButton: HTMLButtonElement;
   private editOnlyRows: HTMLElement[] = [];
 
   /** Where opened files and edits live; see workspace/workspace.ts. */
@@ -70,6 +99,9 @@ export class App {
   private showFrameRate = localStorage.getItem(FRAME_RATE_KEY) === '1';
   /** Whether a history entry is parked for the back button to consume. */
   private backGuard = false;
+  /** Show Markdown as prose rather than as its source. Only for .md files. */
+  private reader = localStorage.getItem(READER_KEY) !== '0';
+  private readerHost: HTMLDivElement;
 
   private readonly host: HTMLElement;
 
@@ -102,6 +134,8 @@ export class App {
     this.files = new FilePanel({
       onOpenRepository: (url) => this.openRepository(url),
       onOpenFile: (path) => this.showFile(path),
+      recent: () => this.store.listWorkspaces(),
+      onOpenRecent: (meta) => this.openRecent(meta),
       onVisibilityChange: () => this.syncBackGuard(),
     });
 
@@ -112,9 +146,15 @@ export class App {
       'aria-label': 'File name',
     }) as HTMLInputElement;
 
-    this.undoButton = h('button', { type: 'button', class: 'icon-btn', title: 'Undo', text: '↶' }) as HTMLButtonElement;
-    this.redoButton = h('button', { type: 'button', class: 'icon-btn', title: 'Redo', text: '↷' }) as HTMLButtonElement;
-    this.modeButton = h('button', { type: 'button', class: 'mode-btn' }) as HTMLButtonElement;
+    // Everything tappable lives in the bottom bar: the top of a phone screen is
+    // the part of it a thumb cannot reach, and this app is held one-handed
+    // while reading. The bar at the top is a title, and nothing else.
+    this.undoButton = toolButton('Undo', '↶', 'Undo');
+    this.redoButton = toolButton('Redo', '↷', 'Redo');
+    this.modeButton = toolButton('Edit', '✎', 'Edit');
+    this.readerButton = toolButton('Reader', '¶', 'Reader');
+    this.subtitle = h('div', { class: 'topbar-sub' });
+    this.toolbar = h('nav', { class: 'toolbar', 'aria-label': 'Actions' });
 
     this.dirtyMark = h('span', { class: 'topbar-dirty', title: 'Unsaved changes', text: '●', hidden: true });
     this.statusPosition = h('span', { class: 'status-item', text: 'Ln 1, Col 1' });
@@ -122,26 +162,24 @@ export class App {
     this.statusSize = h('span', { class: 'status-item status-size' });
     this.statusFrames = h('span', { class: 'status-item status-frames', hidden: true });
 
+    this.readerHost = h('div', { class: 'reader', hidden: true }) as HTMLDivElement;
     this.sheet = h('div', { class: 'sheet', hidden: true }) as HTMLDivElement;
     this.root = h('div', { class: 'app' }) as HTMLDivElement;
   }
 
   mount(): void {
-    const filesButton = h('button', { type: 'button', class: 'icon-btn', title: 'Files', text: '☰' });
-    const menuButton = h('button', { type: 'button', class: 'icon-btn', title: 'Settings', text: '⋯' });
+    const filesButton = toolButton('Files', '☰', 'Files');
+    const menuButton = toolButton('More', '⋯', 'Settings');
     const keyboardButton = h('button', { type: 'button', class: 'icon-btn', title: 'Hide keyboard', text: '⌄' });
 
+    // A title, centred, with where the file came from underneath it. No
+    // controls: nothing up here needs to be reachable.
     const topbar = h('header', { class: 'topbar' }, [
-      filesButton,
-      this.nameField,
-      this.dirtyMark,
-      this.undoButton,
-      this.redoButton,
-      this.modeButton,
-      menuButton,
+      h('div', { class: 'topbar-line' }, [this.nameField, this.dirtyMark]),
+      this.subtitle,
     ]);
 
-    const editorHost = h('div', { class: 'editor-host' });
+    const editorHost = h('div', { class: 'editor-host' }, [this.readerHost]);
     const statusbar = h('footer', { class: 'statusbar' }, [
       this.statusPosition,
       h('span', { class: 'status-spacer' }),
@@ -151,10 +189,20 @@ export class App {
       keyboardButton,
     ]);
 
+    this.toolbar.append(
+      filesButton,
+      this.readerButton,
+      this.undoButton,
+      this.redoButton,
+      this.modeButton,
+      menuButton,
+    );
+
     this.root.append(
       topbar,
       editorHost,
       statusbar,
+      this.toolbar,
       this.keybar.element,
       this.keyboard.element,
       this.files.element,
@@ -185,6 +233,7 @@ export class App {
 
     menuButton.addEventListener('click', () => this.openSheet());
     filesButton.addEventListener('click', () => this.toggleFiles());
+    this.readerButton.addEventListener('click', () => this.setReader(!this.reader));
     this.modeButton.addEventListener('click', () => {
       this.setMode(this.mode === 'view' ? 'edit' : 'view');
     });
@@ -308,6 +357,15 @@ export class App {
     if (ref.path) await this.showFile(ref.path);
   }
 
+  /** Reopen a repository that has been opened before, from its stored record. */
+  private async openRecent(meta: import('../workspace/types.ts').WorkspaceMeta): Promise<void> {
+    const { provider, owner, repo, branch } = meta.repository;
+    const workspace = await Workspace.open({ provider, owner, repo, branch }, this.store);
+    this.workspace = workspace;
+    this.files.setWorkspace(workspace, workspace.active ? parentPath(workspace.active) : '');
+    if (workspace.active) await this.showFile(workspace.active);
+  }
+
   /** Put a file from the workspace on screen. */
   private async showFile(path: string): Promise<void> {
     const workspace = this.workspace;
@@ -323,6 +381,11 @@ export class App {
 
     this.editor.setValue(file.content, this.fileName);
     this.editor.renderer.scroller.scrollTop = 0;
+    this.subtitle.textContent =
+      workspace.repository.provider === 'local'
+        ? workspace.repository.name
+        : `${workspace.repository.name} · ${parentPath(path) || '/'}`;
+    this.applyReader();
     this.updateStatus();
     this.updateSize();
     this.files.refresh();
@@ -412,14 +475,51 @@ export class App {
     else this.input.blur();
   }
 
+  // ------------------------------------------------------------------ reader
+
+  /**
+   * Markdown as prose instead of as source.
+   *
+   * A README is written to be read, not inspected, and reading one as a wall
+   * of `##` and `[text](url)` on a four-inch screen is the worst of both. The
+   * source is one tap away and is what editing always shows — rendered text
+   * cannot be edited in place, and pretending otherwise would be a lie about
+   * where the caret is.
+   */
+  private setReader(on: boolean): void {
+    this.reader = on;
+    localStorage.setItem(READER_KEY, on ? '1' : '0');
+    this.applyReader();
+  }
+
+  private applyReader(): void {
+    const available = Boolean(this.activePath) && isMarkdown(this.activePath as string);
+    const showing = available && this.reader && this.mode === 'view';
+
+    this.readerButton.hidden = !available;
+    this.readerButton.classList.toggle('tool-active', showing);
+    this.readerButton.querySelector('.tool-label')!.textContent = showing ? 'Source' : 'Reader';
+    this.readerButton.querySelector('.tool-glyph')!.textContent = textGlyph(showing ? '⌗' : '¶');
+
+    this.readerHost.hidden = !showing;
+    this.root.classList.toggle('app-reading', showing);
+    if (showing) {
+      renderMarkdown(this.editor.getValue(), this.readerHost);
+      this.readerHost.scrollTop = 0;
+    } else {
+      this.readerHost.replaceChildren();
+    }
+  }
+
   private applyMode(): void {
     const editing = this.mode === 'edit';
     this.editor.setReadOnly(!editing);
     this.root.classList.toggle('app-viewing', !editing);
 
-    this.modeButton.textContent = editing ? 'Done' : 'Edit';
+    this.modeButton.querySelector('.tool-label')!.textContent = editing ? 'Done' : 'Edit';
+    this.modeButton.querySelector('.tool-glyph')!.textContent = textGlyph(editing ? '✓' : '✎');
     this.modeButton.title = editing ? 'Finish editing' : 'Edit this file';
-    this.modeButton.classList.toggle('mode-btn-active', editing);
+    this.modeButton.classList.toggle('tool-active', editing);
 
     // Undo has nothing to undo while viewing, and renaming a file is an edit.
     this.undoButton.hidden = !editing;
@@ -429,6 +529,7 @@ export class App {
     for (const row of this.editOnlyRows) row.hidden = !editing;
 
     this.syncKeyboards();
+    this.applyReader();
     this.updateStatus();
   }
 
@@ -633,6 +734,7 @@ export class App {
       ]),
 
       toggleRow('Word wrap', config.wordWrap, (value) => set({ wordWrap: value })),
+      toggleRow('Smart wrap', config.smartWrap, (value) => set({ smartWrap: value })),
       toggleRow('Line numbers', config.lineNumbers, (value) => set({ lineNumbers: value })),
       ...this.editOnly([
         segmentRow('Keyboard', [

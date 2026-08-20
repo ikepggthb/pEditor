@@ -69,6 +69,7 @@ src/workspace/
   store.ts      IndexedDB 永続化
 src/ui/
   files.ts    ファイルブラウザ
+  markdown.ts Markdown ビュアー
   keyboard/   コード用オンスクリーンキーボード
   …           アプリシェル（トップバー・ステータス・キーバー・設定）
 ```
@@ -169,7 +170,7 @@ npm test      # 65 tests
 
 ## 現状の範囲
 
-**入っているもの** — 閲覧 / 編集モードの切替（既定は閲覧）・GitHub public repository をURLで開く・ファイルブラウザ・開いたファイルの IndexedDB 保存と復元・変更マーク・編集・選択・Undo/Redo・折り返し・シンタックスハイライト（TS/JS・Rust・C・JSON・CSS・HTML・Markdown）・自動インデント・括弧の自動補完・コメントトグル・行移動/複製・タッチ操作一式・ピンチで文字サイズ変更・コード用キーボード（OS キーボードと切替可）・設定・テーマ・オフライン動作・ファイルを開く / ダウンロード。
+**入っているもの** — 閲覧 / 編集モードの切替（既定は閲覧）・GitHub public repository をURLで開く・最近開いたリポジトリ・ファイルブラウザ・Markdown ビュアー・コード構造に沿った折り返し（Smart wrap）・操作は全て画面下部のバー・開いたファイルの IndexedDB 保存と復元・変更マーク・編集・選択・Undo/Redo・折り返し・シンタックスハイライト（TS/JS・Rust・C・JSON・CSS・HTML・Markdown）・自動インデント・括弧の自動補完・コメントトグル・行移動/複製・タッチ操作一式・ピンチで文字サイズ変更・コード用キーボード（OS キーボードと切替可）・設定・テーマ・オフライン動作・ファイルを開く / ダウンロード。
 
 **入っていないもの** — GitHub への commit、認証（private repository）、diff 表示、リポジトリ内検索、タブ、複数カーソル、コード実行・プレビュー、補完。
 

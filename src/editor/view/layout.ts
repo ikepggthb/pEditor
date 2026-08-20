@@ -9,6 +9,7 @@ import {
   lineColumns,
 } from './columns.ts';
 import { firstNonWhitespace } from '../model/words.ts';
+import { smartWrap } from './smartWrap.ts';
 import type { Metrics } from './metrics.ts';
 
 /** How one document line is broken into visual rows. */
@@ -26,6 +27,8 @@ export interface LineLayout {
 export interface LayoutOptions {
   tabSize: number;
   wordWrap: boolean;
+  /** Break code at its structure rather than wherever it runs out of room. */
+  smartWrap?: boolean;
 }
 
 /**
@@ -198,13 +201,19 @@ export class Layout {
       return { rowStarts: [0], rowIndent: [0], columns, width };
     }
 
+    const ends = clusterEnds(text);
+    if (this.options.smartWrap) {
+      const wrapped = smartWrap(text, columns, this.wrapColumns, tabSize, ends);
+      return { ...wrapped, columns, width };
+    }
+
     const rowStarts = [0];
     const rowIndent = [0];
     const indent = this.hangingIndent(text);
     this.wrapLine(text, indent, (start) => {
       rowStarts.push(start);
       rowIndent.push(indent);
-    }, clusterEnds(text));
+    }, ends);
     return { rowStarts, rowIndent, columns, width };
   }
 
@@ -234,6 +243,9 @@ export class Layout {
     // the document scrollable sideways far enough to read it.
     const width = this.lineWidth(line);
     if (!this.options.wordWrap || width <= this.wrapColumns) return 1;
+    // Smart wrap needs the column map to place its breaks, so counting it is
+    // laying it out. Cheap enough: it only reaches here for lines that wrap.
+    if (this.options.smartWrap) return this.computeLine(text).rowStarts.length;
     return this.wrapLine(text, this.hangingIndent(text), null, this.clusterEndsFor(line, text));
   }
 

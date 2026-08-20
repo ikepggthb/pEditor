@@ -1,30 +1,53 @@
 /**
- * Colour tokens.
+ * Colour and type tokens.
  *
- * Dark is the default because that is what a phone screen at night calls for,
- * and because it is the theme the syntax palette was tuned against. `data-theme`
- * on <html> is set by the app; the media query only decides what "auto" means.
+ * Modelled on iOS: a grouped background with content sitting on raised cards,
+ * system greys rather than tinted ones, hairline separators, and one accent
+ * that everything tappable shares. The point is not imitation — it is that a
+ * phone UI has about four surfaces and a reader recognises them instantly when
+ * they behave the way every other app on the device behaves.
  */
 :root {
-  --ui-font: system-ui, -apple-system, 'Segoe UI', Roboto, 'Hiragino Sans', 'Noto Sans JP', sans-serif;
-  --pe-font: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Roboto Mono', 'Noto Sans Mono CJK JP', monospace;
+  /* SF on Apple hardware, the platform's own face everywhere else. Never a
+     webfont: a UI that waits on a download to draw its labels is a UI that
+     flashes on every cold start. */
+  --ui-font: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, 'Segoe UI',
+    Roboto, 'Hiragino Sans', 'Noto Sans JP', sans-serif;
+  --pe-font: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, 'Roboto Mono',
+    'Noto Sans Mono CJK JP', monospace;
 
-  --bg: #12141a;
-  --bg-raised: #181b23;
-  --bg-sunken: #0d0f14;
-  --border: #262b36;
-  --fg: #d8dee9;
-  --fg-dim: #8b93a7;
-  --accent: #7aa2f7;
-  --accent-soft: rgba(122, 162, 247, 0.18);
-  --danger: #f7768e;
+  /* Type scale, in the sizes iOS actually uses. */
+  --text-body: 17px;
+  --text-callout: 16px;
+  --text-subhead: 15px;
+  --text-footnote: 13px;
+  --text-caption: 12px;
 
-  --pe-bg: #12141a;
-  --pe-gutter-fg: #4d5668;
-  --pe-gutter-fg-active: #9aa5bd;
-  --pe-caret: #7aa2f7;
-  --pe-selection: rgba(122, 162, 247, 0.28);
-  --pe-active-line: rgba(255, 255, 255, 0.035);
+  --radius: 12px;
+  --radius-sm: 9px;
+  /* A separator is a hairline, not a border. On a 3x screen this is one pixel. */
+  --hairline: 0.5px;
+
+  /* Dark first: it is what a phone at night calls for, and what the syntax
+     palette was tuned against. */
+  --bg: #000000;
+  --bg-raised: #1c1c1e;
+  --bg-sunken: #2c2c2e;
+  --bg-bar: rgba(28, 28, 30, 0.82);
+  --border: rgba(84, 84, 88, 0.6);
+  --fg: #ffffff;
+  --fg-dim: #98989f;
+  --fg-faint: #636366;
+  --accent: #0a84ff;
+  --accent-soft: rgba(10, 132, 255, 0.22);
+  --danger: #ff453a;
+
+  --pe-bg: #1c1c1e;
+  --pe-gutter-fg: #55555a;
+  --pe-gutter-fg-active: #b0b0b8;
+  --pe-caret: #0a84ff;
+  --pe-selection: rgba(10, 132, 255, 0.3);
+  --pe-active-line: rgba(255, 255, 255, 0.045);
 
   --tok-keyword: #bb9af7;
   --tok-control: #f7768e;
@@ -47,22 +70,25 @@
 }
 
 :root[data-theme='light'] {
-  --bg: #ffffff;
-  --bg-raised: #f6f7f9;
-  --bg-sunken: #eceef2;
-  --border: #dcdfe6;
-  --fg: #1f2430;
-  --fg-dim: #6b7280;
-  --accent: #2f6feb;
-  --accent-soft: rgba(47, 111, 235, 0.14);
-  --danger: #d13438;
+  /* The grouped-list arrangement: the page is grey, the content is white. */
+  --bg: #f2f2f7;
+  --bg-raised: #ffffff;
+  --bg-sunken: #e9e9ed;
+  --bg-bar: rgba(249, 249, 249, 0.82);
+  --border: rgba(60, 60, 67, 0.24);
+  --fg: #000000;
+  --fg-dim: #8e8e93;
+  --fg-faint: #aeaeb2;
+  --accent: #007aff;
+  --accent-soft: rgba(0, 122, 255, 0.14);
+  --danger: #ff3b30;
 
   --pe-bg: #ffffff;
-  --pe-gutter-fg: #a5acbb;
-  --pe-gutter-fg-active: #4b5563;
-  --pe-caret: #2f6feb;
-  --pe-selection: rgba(47, 111, 235, 0.2);
-  --pe-active-line: rgba(0, 0, 0, 0.035);
+  --pe-gutter-fg: #b4b4bb;
+  --pe-gutter-fg-active: #48484a;
+  --pe-caret: #007aff;
+  --pe-selection: rgba(0, 122, 255, 0.2);
+  --pe-active-line: rgba(0, 0, 0, 0.03);
 
   --tok-keyword: #8250df;
   --tok-control: #cf222e;

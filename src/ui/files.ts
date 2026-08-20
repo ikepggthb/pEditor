@@ -1,11 +1,16 @@
 import { type FileEntry, RepositoryError, parseRepositoryUrl, parentPath } from '../repo/index.ts';
 import type { Workspace } from '../workspace/workspace.ts';
+import type { WorkspaceMeta } from '../workspace/types.ts';
 import { h } from './dom.ts';
 
 export interface FilePanelOptions {
   /** Open a repository from a pasted URL. Rejections are shown in the panel. */
   onOpenRepository: (url: string) => Promise<void>;
   onOpenFile: (path: string) => Promise<void>;
+  /** Repositories opened before, newest first, for the shortcut list. */
+  recent: () => Promise<WorkspaceMeta[]>;
+  /** Reopen one of them without going through a URL. */
+  onOpenRecent: (meta: WorkspaceMeta) => Promise<void>;
   /** Called whenever the panel opens or closes, so the shell can react. */
   onVisibilityChange?: () => void;
 }
@@ -31,6 +36,7 @@ export class FilePanel {
   private list: HTMLDivElement;
   private status: HTMLDivElement;
   private title: HTMLDivElement;
+  private recent: HTMLDivElement;
   /** Guards against a slow listing landing after the user has moved on. */
   private generation = 0;
 
@@ -63,6 +69,7 @@ export class FilePanel {
     this.crumbs = h('div', { class: 'files-crumbs' }) as HTMLDivElement;
     this.list = h('div', { class: 'files-list' }) as HTMLDivElement;
     this.status = h('div', { class: 'files-status' }) as HTMLDivElement;
+    this.recent = h('div', { class: 'files-recent', hidden: true }) as HTMLDivElement;
 
     this.element = h('div', { class: 'files', hidden: true }, [
       h('div', { class: 'files-head' }, [
@@ -72,6 +79,7 @@ export class FilePanel {
         this.crumbs,
       ]),
       this.status,
+      this.recent,
       this.list,
     ]) as HTMLDivElement;
   }
@@ -85,7 +93,49 @@ export class FilePanel {
     this.element.removeAttribute('hidden');
     requestAnimationFrame(() => this.element.classList.add('files-visible'));
     if (this.workspace) void this.render();
+    void this.renderRecent();
     this.options.onVisibilityChange?.();
+  }
+
+  /**
+   * Repositories opened before.
+   *
+   * Typing a GitHub URL on a phone keyboard is the most expensive thing this
+   * app asks of anyone, and it is asked again every time the same project is
+   * opened. Once is enough.
+   */
+  private async renderRecent(): Promise<void> {
+    let entries: WorkspaceMeta[] = [];
+    try {
+      entries = await this.options.recent();
+    } catch {
+      entries = [];
+    }
+    const others = entries.filter(
+      (meta) => meta.repository.provider !== 'local' && meta.id !== this.workspace?.id,
+    );
+    this.recent.hidden = others.length === 0;
+    if (!others.length) return;
+
+    this.recent.replaceChildren(
+      h('div', { class: 'files-section', text: 'Recent' }),
+      ...others.slice(0, 6).map((meta) => {
+        const row = h('button', { type: 'button', class: 'files-row files-recent-row' }, [
+          h('span', { class: 'files-glyph files-glyph-repo' }),
+          h('span', { class: 'files-name', text: meta.repository.name }),
+          h('span', { class: 'files-meta', text: meta.repository.branch ?? '' }),
+          h('span', { class: 'files-chevron', text: '›' }),
+        ]);
+        row.addEventListener('click', () => {
+          this.setStatus('Opening…');
+          void this.options
+            .onOpenRecent(meta)
+            .then(() => this.setStatus(''))
+            .catch((error) => this.setStatus(describe(error), 'error'));
+        });
+        return row;
+      }),
+    );
   }
 
   hide(): void {
@@ -100,7 +150,13 @@ export class FilePanel {
     this.workspace = workspace;
     this.path = path;
     this.title.textContent = workspace.repository.name;
-    if (this.isOpen) void this.render();
+    if (this.isOpen) {
+      void this.render();
+      // The shortcut list leaves out whichever repository is open, so switching
+      // between two of them has to redraw it — otherwise the one just left is
+      // missing from the list that exists to get back to it.
+      void this.renderRecent();
+    }
   }
 
   /** Repaint the current directory, e.g. after a file became modified. */
@@ -155,17 +211,27 @@ export class FilePanel {
 
   private row(entry: FileEntry): HTMLElement {
     const status = this.workspace?.statusOf(entry.path);
+    const directory = entry.type === 'directory';
+
+    // Three signals, not one. A folder gets a filled glyph in the accent
+    // colour, a heavier name, and a chevron saying the row goes somewhere; a
+    // file gets an outlined glyph, its size, and no chevron. One of those alone
+    // is a difference you have to look for.
     const node = h('button', { type: 'button', class: `files-row files-${entry.type}` }, [
-      h('span', { class: 'files-icon', text: entry.type === 'directory' ? '/' : '' }),
+      // Drawn in CSS rather than set as a character: a glyph that the device
+      // happens not to have is a tofu box, and file icons are exactly the sort
+      // of symbol whose coverage varies by platform.
+      h('span', { class: `files-glyph ${directory ? 'files-glyph-dir' : 'files-glyph-file'}` }),
       h('span', { class: 'files-name', text: entry.name }),
     ]);
     if (status && status !== 'unchanged') {
       // The same single letter git uses, for the same reason: it survives being
       // squeezed against the right edge of a phone screen.
       node.appendChild(h('span', { class: 'files-badge', text: 'M', title: 'Modified' }));
-    } else if (entry.type === 'file' && entry.size !== undefined) {
-      node.appendChild(h('span', { class: 'files-size', text: formatSize(entry.size) }));
+    } else if (!directory && entry.size !== undefined) {
+      node.appendChild(h('span', { class: 'files-meta', text: formatSize(entry.size) }));
     }
+    if (directory) node.appendChild(h('span', { class: 'files-chevron', text: '›' }));
 
     node.addEventListener('click', () => {
       if (entry.type === 'directory') {

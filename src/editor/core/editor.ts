@@ -31,6 +31,8 @@ export interface EditorConfig {
   fontSize: number;
   autoCloseBrackets: boolean;
   autoIndent: boolean;
+  /** Break long lines at their structure rather than at the screen edge. */
+  smartWrap: boolean;
 }
 
 export const DEFAULT_CONFIG: EditorConfig = {
@@ -41,6 +43,7 @@ export const DEFAULT_CONFIG: EditorConfig = {
   fontSize: 15,
   autoCloseBrackets: true,
   autoIndent: true,
+  smartWrap: true,
 };
 
 export type EditorEvent = 'change' | 'selection' | 'config' | 'scroll' | 'focus';
@@ -89,6 +92,7 @@ export class Editor {
     this.layout = new Layout(this.buffer, this.metrics, {
       tabSize: this.config.tabSize,
       wordWrap: this.config.wordWrap,
+      smartWrap: this.config.smartWrap,
     });
   }
 
@@ -306,7 +310,10 @@ export class Editor {
     // cached column with it. A font size change does not: it alters only how
     // many of those columns fit, which `measure` works out on its own. Telling
     // the two apart is what keeps a pinch on a large document cheap.
-    const rewidth = next.tabSize !== this.config.tabSize || next.wordWrap !== this.config.wordWrap;
+    const rewidth =
+      next.tabSize !== this.config.tabSize ||
+      next.wordWrap !== this.config.wordWrap ||
+      next.smartWrap !== this.config.smartWrap;
     const structural =
       rewidth ||
       next.fontSize !== this.config.fontSize ||
@@ -315,6 +322,7 @@ export class Editor {
     this.config = next;
     this.layout.options.tabSize = next.tabSize;
     this.layout.options.wordWrap = next.wordWrap;
+    this.layout.options.smartWrap = next.smartWrap;
     this.applyFontSize();
 
     if (rewidth) this.layout.invalidateAll();
