@@ -47,6 +47,18 @@ export interface FileEntry {
   size?: number;
 }
 
+/** A repository found by searching, before anything has been fetched from it. */
+export interface RepositorySummary {
+  provider: ProviderId;
+  owner: string;
+  repo: string;
+  /** `owner/repo`, for display. */
+  name: string;
+  description?: string;
+  stars?: number;
+  language?: string;
+}
+
 export interface RepositoryProvider {
   readonly info: RepositoryInfo;
 

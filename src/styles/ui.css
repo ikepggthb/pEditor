@@ -699,9 +699,49 @@
   opacity: 0.6;
 }
 
+/* Which of the two screens is showing. The same segmented control the rest of
+   the settings use, so it reads as a switch and not as two buttons. */
+.files-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  margin-bottom: 10px;
+  border-radius: 9px;
+  background: var(--bg-sunken);
+}
+
+.files-tabs[hidden] {
+  display: none;
+}
+
+.files-tab {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--fg);
+  font-family: var(--ui-font);
+  font-size: var(--text-footnote);
+  font-weight: 500;
+  transition: background 0.15s ease;
+}
+
+.files-tab.is-active {
+  background: var(--bg-raised);
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.16);
+}
+
 .files-open-row {
   display: flex;
   gap: 8px;
+}
+
+.files-open-row[hidden],
+.files-crumbs[hidden] {
+  display: none;
 }
 
 .files-url {
@@ -709,6 +749,8 @@
   min-width: 0;
   height: 38px;
   padding: 0 12px;
+  appearance: none;
+  -webkit-appearance: none;
   border: 0;
   border-radius: var(--radius-sm);
   background: var(--bg-sunken);
@@ -953,10 +995,37 @@
   letter-spacing: -0.01em;
 }
 
-.files-recent-row .files-name {
+/*
+ * A repository is not a file, and its row says so before it is read: two lines
+ * instead of one, the app's own face instead of the monospace one used for
+ * names that come out of a filesystem, and taller. The two kinds never appear
+ * on the same screen either — but they should not look alike even so.
+ */
+.files-repo-row {
+  min-height: 62px;
+  padding-top: 9px;
+  padding-bottom: 9px;
+}
+
+.files-stack {
+  flex: 1;
+  min-width: 0;
+}
+
+.files-repo-row .files-name {
   font-family: var(--ui-font);
   font-size: var(--text-callout);
   font-weight: 600;
+}
+
+.files-note {
+  margin-top: 2px;
+  color: var(--fg-dim);
+  font-family: var(--ui-font);
+  font-size: var(--text-footnote);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .files-meta {

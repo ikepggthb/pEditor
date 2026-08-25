@@ -3,6 +3,7 @@ import {
   type RepositoryInfo,
   type RepositoryProvider,
   type RepositoryRef,
+  type RepositorySummary,
   RepositoryError,
   baseName,
 } from './types.ts';
@@ -21,11 +22,23 @@ interface TreeResponse {
   truncated?: boolean;
 }
 
-async function getJson<T>(url: string): Promise<T> {
+/**
+ * GitHub meters search separately from everything else, and far more tightly:
+ * ten requests a minute against sixty an hour. Which budget ran out decides
+ * what the message should tell someone to do, so the caller says which one it
+ * is spending.
+ */
+type Budget = 'core' | 'search';
+
+async function getJson<T>(url: string, budget: Budget = 'core', signal?: AbortSignal): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(url, { headers: { Accept: 'application/vnd.github+json' } });
-  } catch {
+    response = await fetch(url, {
+      headers: { Accept: 'application/vnd.github+json' },
+      ...(signal ? { signal } : {}),
+    });
+  } catch (error) {
+    if ((error as { name?: string }).name === 'AbortError') throw error;
     throw new RepositoryError('network', 'Could not reach GitHub.');
   }
 
@@ -37,9 +50,15 @@ async function getJson<T>(url: string): Promise<T> {
     const reset = Number(response.headers.get('x-ratelimit-reset'));
     const remaining = response.headers.get('x-ratelimit-remaining');
     const minutes = reset ? Math.max(1, Math.ceil((reset * 1000 - Date.now()) / 60000)) : 0;
-    // An anonymous 403 from this API is the hourly limit almost every time, so
+    // An anonymous 403 from this API is a spent budget almost every time, so
     // that is what it says even when the headers are not readable — "refused"
     // on its own tells nobody what to do about it.
+    if (budget === 'search') {
+      throw new RepositoryError(
+        'rate-limited',
+        'GitHub allows ten anonymous searches a minute. Wait a moment and try again.',
+      );
+    }
     throw new RepositoryError(
       'rate-limited',
       minutes && remaining === '0'
@@ -197,6 +216,51 @@ export class GitHubRepositoryProvider implements RepositoryProvider {
     }
     return this.treeShas.get(path) as string;
   }
+}
+
+/**
+ * Public repositories matching `query`.
+ *
+ * Not a method on the provider: a provider is bound to one repository, and this
+ * is what you use to find one in the first place. Ten anonymous searches a
+ * minute is the budget, so the caller is expected to wait for typing to stop
+ * rather than searching per keystroke.
+ */
+export async function searchGitHubRepositories(
+  query: string,
+  signal?: AbortSignal,
+): Promise<RepositorySummary[]> {
+  const trimmed = query.trim();
+  if (!trimmed) return [];
+
+  const url = `${API}/search/repositories?q=${encodeURIComponent(trimmed)}&per_page=20`;
+  const body = await getJson<{
+    items?: {
+      name?: string;
+      full_name?: string;
+      description?: string | null;
+      stargazers_count?: number;
+      language?: string | null;
+      owner?: { login?: string };
+    }[];
+  }>(url, 'search', signal);
+
+  const out: RepositorySummary[] = [];
+  for (const item of body.items ?? []) {
+    const owner = item.owner?.login;
+    const repo = item.name;
+    if (!owner || !repo) continue;
+    out.push({
+      provider: 'github',
+      owner,
+      repo,
+      name: item.full_name ?? `${owner}/${repo}`,
+      ...(item.description ? { description: item.description } : {}),
+      ...(typeof item.stargazers_count === 'number' ? { stars: item.stargazers_count } : {}),
+      ...(item.language ? { language: item.language } : {}),
+    });
+  }
+  return out;
 }
 
 /** Directories first, then case-insensitive by name — the usual file listing. */

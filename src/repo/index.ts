@@ -1,9 +1,10 @@
-import { GitHubRepositoryProvider } from './github.ts';
+import { GitHubRepositoryProvider, searchGitHubRepositories } from './github.ts';
 import { LocalRepositoryProvider } from './local.ts';
 import {
   type RepositoryInfo,
   type RepositoryProvider,
   type RepositoryRef,
+  type RepositorySummary,
   RepositoryError,
 } from './types.ts';
 
@@ -32,6 +33,14 @@ export async function providerFor(ref: RepositoryRef): Promise<RepositoryProvide
 export function providerFrom(info: RepositoryInfo): RepositoryProvider | null {
   if (info.provider === 'local') return new LocalRepositoryProvider();
   return GitHubRepositoryProvider.restore(info);
+}
+
+/**
+ * Find repositories to open. Only GitHub can answer this today; another
+ * provider would add a case here alongside its own implementation.
+ */
+export function searchRepositories(query: string, signal?: AbortSignal): Promise<RepositorySummary[]> {
+  return searchGitHubRepositories(query, signal);
 }
 
 export * from './types.ts';

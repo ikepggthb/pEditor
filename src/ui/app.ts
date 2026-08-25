@@ -15,7 +15,13 @@ import { debounce, loadDocument, loadSettings, saveSettings, throttle } from './
 import { lockDocumentScroll, trackVisualViewport } from './viewport.ts';
 import { SAMPLE_FILENAME, SAMPLE_TEXT } from './sample.ts';
 import { isMarkdown, renderMarkdown } from './markdown.ts';
-import { baseName, parentPath, parseRepositoryUrl, RepositoryError } from '../repo/index.ts';
+import {
+  baseName,
+  parentPath,
+  parseRepositoryUrl,
+  searchRepositories,
+  RepositoryError,
+} from '../repo/index.ts';
 import { Workspace } from '../workspace/workspace.ts';
 import { WorkspaceStore } from '../workspace/store.ts';
 
@@ -136,6 +142,7 @@ export class App {
       onOpenFile: (path) => this.showFile(path),
       recent: () => this.store.listWorkspaces(),
       onOpenRecent: (meta) => this.openRecent(meta),
+      search: (query, signal) => searchRepositories(query, signal),
       onVisibilityChange: () => this.syncBackGuard(),
     });
 

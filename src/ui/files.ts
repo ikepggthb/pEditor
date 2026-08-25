@@ -1,7 +1,18 @@
-import { type FileEntry, RepositoryError, parseRepositoryUrl, parentPath } from '../repo/index.ts';
+import {
+  type FileEntry,
+  type RepositorySummary,
+  RepositoryError,
+  parseRepositoryUrl,
+  parentPath,
+} from '../repo/index.ts';
 import type { Workspace } from '../workspace/workspace.ts';
 import type { WorkspaceMeta } from '../workspace/types.ts';
 import { h } from './dom.ts';
+
+/** Wait for typing to stop before searching: ten anonymous searches a minute. */
+const SEARCH_DEBOUNCE_MS = 450;
+/** One or two letters match everything and cost a request to prove it. */
+const MIN_QUERY = 2;
 
 export interface FilePanelOptions {
   /** Open a repository from a pasted URL. Rejections are shown in the panel. */
@@ -11,19 +22,29 @@ export interface FilePanelOptions {
   recent: () => Promise<WorkspaceMeta[]>;
   /** Reopen one of them without going through a URL. */
   onOpenRecent: (meta: WorkspaceMeta) => Promise<void>;
+  /** Find repositories by name. */
+  search: (query: string, signal: AbortSignal) => Promise<RepositorySummary[]>;
   /** Called whenever the panel opens or closes, so the shell can react. */
   onVisibilityChange?: () => void;
 }
 
+type Tab = 'browse' | 'open';
+
 /**
- * The file browser.
+ * The file browser, and the way in to a repository.
  *
- * One directory at a time rather than an indented tree. A phone screen is
- * forty characters wide, and a nested tree spends most of them on indentation
- * for paths that are already ten levels deep — `src/librustdoc/html/render`
- * costs nothing here and half the screen there. Going down is a tap on a
- * directory, going up is a tap on the breadcrumb, and the current position is
- * always spelled out at the top.
+ * Two screens rather than one list, and that separation is the point. Files and
+ * repositories are different kinds of thing that happen to look alike in a row
+ * — a name, an icon, a chevron — so a list holding both is a list you have to
+ * read carefully to use. Browse shows one directory of the open repository;
+ * Open shows repositories, whether searched for or opened before. Neither ever
+ * shows the other's rows.
+ *
+ * Browse is one directory at a time rather than an indented tree. A phone
+ * screen is forty characters wide, and a nested tree spends most of them on
+ * indentation for paths already ten levels deep — `src/librustdoc/html/render`
+ * costs nothing here and half the screen there. Down is a tap on a directory,
+ * up is a tap on the breadcrumb, and where you are is spelled out at the top.
  */
 export class FilePanel {
   readonly element: HTMLDivElement;
@@ -31,33 +52,43 @@ export class FilePanel {
   private readonly options: FilePanelOptions;
   private workspace: Workspace | null = null;
   private path = '';
-  private urlField: HTMLInputElement;
+  private tab: Tab = 'open';
+
+  private searchField: HTMLInputElement;
+  private tabs: HTMLDivElement;
   private crumbs: HTMLDivElement;
+  private searchRow: HTMLDivElement;
   private list: HTMLDivElement;
   private status: HTMLDivElement;
   private title: HTMLDivElement;
-  private recent: HTMLDivElement;
+
   /** Guards against a slow listing landing after the user has moved on. */
   private generation = 0;
+  private searchTimer: number | null = null;
+  private searchRun: AbortController | null = null;
 
   constructor(options: FilePanelOptions) {
     this.options = options;
 
-    this.urlField = h('input', {
+    this.searchField = h('input', {
       class: 'files-url',
-      type: 'url',
-      inputmode: 'url',
+      type: 'search',
+      // Not `type=url`: most of what goes in here is words, and a URL keyboard
+      // puts `/` and `.com` where the letters should be.
       autocapitalize: 'off',
       autocomplete: 'off',
       spellcheck: 'false',
-      placeholder: 'github.com/owner/repo',
-      'aria-label': 'GitHub repository URL',
+      enterkeyhint: 'go',
+      placeholder: 'Search, or paste a GitHub URL',
+      'aria-label': 'Search repositories, or paste a GitHub URL',
     }) as HTMLInputElement;
 
-    const openButton = h('button', { type: 'button', class: 'files-open', text: 'Open' });
-    openButton.addEventListener('click', () => void this.openRepository());
-    this.urlField.addEventListener('keydown', (event) => {
-      if ((event as KeyboardEvent).key === 'Enter') void this.openRepository();
+    this.searchField.addEventListener('input', () => this.queueSearch());
+    this.searchField.addEventListener('keydown', (event) => {
+      if ((event as KeyboardEvent).key !== 'Enter') return;
+      const value = this.searchField.value.trim();
+      if (parseRepositoryUrl(value)) void this.withStatus('Opening…', () => this.openRepository(value));
+      else this.queueSearch(0);
     });
 
     this.title = h('div', { class: 'files-title', text: 'Files' }) as HTMLDivElement;
@@ -66,22 +97,34 @@ export class FilePanel {
     // system back gesture — and one of those is not on every phone.
     const closeButton = h('button', { type: 'button', class: 'files-close', title: 'Close', text: '×' });
     closeButton.addEventListener('click', () => this.hide());
+
+    this.tabs = h('div', { class: 'files-tabs', role: 'tablist' }, [
+      this.tabButton('browse', 'Files'),
+      this.tabButton('open', 'Repositories'),
+    ]) as HTMLDivElement;
+
     this.crumbs = h('div', { class: 'files-crumbs' }) as HTMLDivElement;
+    this.searchRow = h('div', { class: 'files-open-row' }, [this.searchField]) as HTMLDivElement;
     this.list = h('div', { class: 'files-list' }) as HTMLDivElement;
     this.status = h('div', { class: 'files-status' }) as HTMLDivElement;
-    this.recent = h('div', { class: 'files-recent', hidden: true }) as HTMLDivElement;
 
     this.element = h('div', { class: 'files', hidden: true }, [
       h('div', { class: 'files-head' }, [
         h('div', { class: 'files-grip' }),
         h('div', { class: 'files-title-row' }, [this.title, closeButton]),
-        h('div', { class: 'files-open-row' }, [this.urlField, openButton]),
+        this.tabs,
+        this.searchRow,
         this.crumbs,
       ]),
       this.status,
-      this.recent,
       this.list,
     ]) as HTMLDivElement;
+  }
+
+  private tabButton(tab: Tab, label: string): HTMLElement {
+    const node = h('button', { type: 'button', class: 'files-tab', 'data-tab': tab, text: label });
+    node.addEventListener('click', () => this.setTab(tab));
+    return node;
   }
 
   get isOpen(): boolean {
@@ -92,57 +135,36 @@ export class FilePanel {
     if (this.isOpen) return;
     this.element.removeAttribute('hidden');
     requestAnimationFrame(() => this.element.classList.add('files-visible'));
-    if (this.workspace) void this.render();
-    void this.renderRecent();
+    // Land on the files of whatever is open; with nothing open there is nothing
+    // to browse, so the way in is the only thing worth showing.
+    this.setTab(this.canBrowse ? 'browse' : 'open');
     this.options.onVisibilityChange?.();
-  }
-
-  /**
-   * Repositories opened before.
-   *
-   * Typing a GitHub URL on a phone keyboard is the most expensive thing this
-   * app asks of anyone, and it is asked again every time the same project is
-   * opened. Once is enough.
-   */
-  private async renderRecent(): Promise<void> {
-    let entries: WorkspaceMeta[] = [];
-    try {
-      entries = await this.options.recent();
-    } catch {
-      entries = [];
-    }
-    const others = entries.filter(
-      (meta) => meta.repository.provider !== 'local' && meta.id !== this.workspace?.id,
-    );
-    this.recent.hidden = others.length === 0;
-    if (!others.length) return;
-
-    this.recent.replaceChildren(
-      h('div', { class: 'files-section', text: 'Recent' }),
-      ...others.slice(0, 6).map((meta) => {
-        const row = h('button', { type: 'button', class: 'files-row files-recent-row' }, [
-          h('span', { class: 'files-glyph files-glyph-repo' }),
-          h('span', { class: 'files-name', text: meta.repository.name }),
-          h('span', { class: 'files-meta', text: meta.repository.branch ?? '' }),
-          h('span', { class: 'files-chevron', text: '›' }),
-        ]);
-        row.addEventListener('click', () => {
-          this.setStatus('Opening…');
-          void this.options
-            .onOpenRecent(meta)
-            .then(() => this.setStatus(''))
-            .catch((error) => this.setStatus(describe(error), 'error'));
-        });
-        return row;
-      }),
-    );
   }
 
   hide(): void {
     if (!this.isOpen) return;
+    this.cancelSearch();
     this.element.classList.remove('files-visible');
     this.element.setAttribute('hidden', '');
     this.options.onVisibilityChange?.();
+  }
+
+  /** Whether there is a repository whose files could be listed. */
+  private get canBrowse(): boolean {
+    return Boolean(this.workspace) && this.workspace?.repository.provider !== 'local';
+  }
+
+  private setTab(tab: Tab): void {
+    this.tab = this.canBrowse ? tab : 'open';
+    this.tabs.hidden = !this.canBrowse;
+    for (const node of this.tabs.querySelectorAll('.files-tab')) {
+      node.classList.toggle('is-active', (node as HTMLElement).dataset.tab === this.tab);
+    }
+    this.crumbs.hidden = this.tab !== 'browse';
+    this.searchRow.hidden = this.tab !== 'open';
+
+    if (this.tab === 'browse') void this.render();
+    else void this.renderRepositories();
   }
 
   /** Point the panel at a workspace, starting in `path`'s directory. */
@@ -150,49 +172,159 @@ export class FilePanel {
     this.workspace = workspace;
     this.path = path;
     this.title.textContent = workspace.repository.name;
-    if (this.isOpen) {
-      void this.render();
-      // The shortcut list leaves out whichever repository is open, so switching
-      // between two of them has to redraw it — otherwise the one just left is
-      // missing from the list that exists to get back to it.
-      void this.renderRecent();
-    }
+    // Opening a repository is done to look inside it, so that is where it goes.
+    if (this.isOpen) this.setTab(this.canBrowse ? 'browse' : 'open');
   }
 
   /** Repaint the current directory, e.g. after a file became modified. */
   refresh(): void {
-    if (this.isOpen && this.workspace) void this.render();
+    if (this.isOpen && this.tab === 'browse') void this.render();
   }
 
-  private async openRepository(): Promise<void> {
-    const value = this.urlField.value.trim();
-    if (!value) return;
-    if (!parseRepositoryUrl(value)) {
-      this.setStatus('That does not look like a GitHub repository URL.', 'error');
+  // ------------------------------------------------------------ repositories
+
+  private cancelSearch(): void {
+    if (this.searchTimer !== null) clearTimeout(this.searchTimer);
+    this.searchTimer = null;
+    this.searchRun?.abort();
+    this.searchRun = null;
+  }
+
+  private queueSearch(delay = SEARCH_DEBOUNCE_MS): void {
+    this.cancelSearch();
+    this.searchTimer = window.setTimeout(() => {
+      this.searchTimer = null;
+      void this.renderRepositories();
+    }, delay);
+  }
+
+  /**
+   * The Open screen: what was typed, or what has been opened before.
+   *
+   * Only ever one of the two. Search results and recent repositories are both
+   * repositories, so showing them together would be the same confusion this
+   * split exists to remove — an empty field means recents, anything else means
+   * results.
+   */
+  private async renderRepositories(): Promise<void> {
+    const mine = ++this.generation;
+    const query = this.searchField.value.trim();
+
+    // A pasted URL needs no request to act on, so it is offered immediately.
+    const ref = query ? parseRepositoryUrl(query) : null;
+    if (ref?.owner && ref.repo) {
+      this.setStatus('');
+      this.list.replaceChildren(
+        h('div', { class: 'files-section', text: 'Open' }),
+        this.repositoryRow(`${ref.owner}/${ref.repo}`, ref.branch ?? '', () =>
+          this.openRepository(query),
+        ),
+      );
       return;
     }
-    this.setStatus('Opening…');
+
+    if (query.length >= MIN_QUERY) {
+      this.setStatus('Searching…');
+      const run = new AbortController();
+      this.searchRun = run;
+      let found: RepositorySummary[];
+      try {
+        found = await this.options.search(query, run.signal);
+      } catch (error) {
+        if (mine !== this.generation || (error as { name?: string }).name === 'AbortError') return;
+        this.setStatus(describe(error), 'error');
+        this.list.replaceChildren();
+        return;
+      }
+      if (mine !== this.generation) return;
+
+      this.setStatus(found.length ? '' : `Nothing on GitHub matches “${query}”.`);
+      this.list.replaceChildren(
+        ...(found.length ? [h('div', { class: 'files-section', text: 'Results' })] : []),
+        ...found.map((summary) =>
+          this.repositoryRow(summary.name, describeRepository(summary), () =>
+            this.openRepository(`${summary.owner}/${summary.repo}`),
+          ),
+        ),
+      );
+      this.list.scrollTop = 0;
+      return;
+    }
+
+    let entries: WorkspaceMeta[] = [];
     try {
-      await this.options.onOpenRepository(value);
-      this.urlField.value = '';
+      entries = await this.options.recent();
+    } catch {
+      entries = [];
+    }
+    if (mine !== this.generation) return;
+
+    // The shortcut list leaves out whichever repository is open — it is one tab
+    // away, and offering to reopen it is a row that does nothing.
+    const repositories = entries.filter(
+      (meta) => meta.repository.provider !== 'local' && meta.id !== this.workspace?.id,
+    );
+    this.setStatus(
+      repositories.length ? '' : 'Search for a repository, or paste a GitHub URL.',
+    );
+    this.list.replaceChildren(
+      ...(repositories.length ? [h('div', { class: 'files-section', text: 'Recent' })] : []),
+      ...repositories.slice(0, 8).map((meta) => {
+        const row = this.repositoryRow(meta.repository.name, meta.repository.branch ?? '', () =>
+          this.options.onOpenRecent(meta),
+        );
+        row.classList.add('files-recent-row');
+        return row;
+      }),
+    );
+    this.list.scrollTop = 0;
+  }
+
+  /** A repository, which is a different shape of row from a file on purpose. */
+  private repositoryRow(name: string, note: string, open: () => Promise<void>): HTMLElement {
+    const row = h('button', { type: 'button', class: 'files-row files-repo-row' }, [
+      h('span', { class: 'files-glyph files-glyph-repo' }),
+      h('div', { class: 'files-stack' }, [
+        h('div', { class: 'files-name', text: name }),
+        ...(note ? [h('div', { class: 'files-note', text: note })] : []),
+      ]),
+      h('span', { class: 'files-chevron', text: '›' }),
+    ]);
+    row.addEventListener('click', () => void this.withStatus('Opening…', open));
+    return row;
+  }
+
+  /**
+   * Run something that can fail, and let the status line say which it was.
+   *
+   * One owner for the message. When the action reported its own failure *and*
+   * resolved, the caller's success path wiped the error a moment later and the
+   * panel sat there saying nothing at all.
+   */
+  private async withStatus(pending: string, action: () => Promise<void>): Promise<void> {
+    this.setStatus(pending);
+    try {
+      await action();
       this.setStatus('');
     } catch (error) {
       this.setStatus(describe(error), 'error');
     }
   }
 
+  private async openRepository(value: string): Promise<void> {
+    this.cancelSearch();
+    await this.options.onOpenRepository(value);
+    this.searchField.value = '';
+  }
+
+  // ------------------------------------------------------------------- files
+
   private async render(): Promise<void> {
     const workspace = this.workspace;
-    if (!workspace) return;
+    if (!workspace || !this.canBrowse) return;
     const mine = ++this.generation;
 
     this.renderCrumbs();
-    if (workspace.repository.provider === 'local') {
-      this.list.replaceChildren();
-      this.setStatus('Open a GitHub repository above to browse its files.');
-      return;
-    }
-
     this.setStatus('Loading…');
     let entries: FileEntry[];
     try {
@@ -245,14 +377,10 @@ export class FilePanel {
   }
 
   private async open(path: string): Promise<void> {
-    this.setStatus('Opening…');
-    try {
+    await this.withStatus('Opening…', async () => {
       await this.options.onOpenFile(path);
-      this.setStatus('');
       this.hide();
-    } catch (error) {
-      this.setStatus(describe(error), 'error');
-    }
+    });
   }
 
   private renderCrumbs(): void {
@@ -278,9 +406,12 @@ export class FilePanel {
     this.crumbs.scrollLeft = this.crumbs.scrollWidth;
   }
 
-  /** Go up one directory. Returns false at the root, so a caller can close. */
+  /**
+   * Go up one level. Returns false when there is nowhere further up, so the
+   * caller can close the panel instead.
+   */
   goUp(): boolean {
-    if (!this.path) return false;
+    if (this.tab !== 'browse' || !this.path) return false;
     this.path = parentPath(this.path);
     void this.render();
     return true;
@@ -293,9 +424,23 @@ export class FilePanel {
   }
 }
 
+function describeRepository(summary: RepositorySummary): string {
+  const parts: string[] = [];
+  if (summary.stars !== undefined) parts.push(`★ ${formatCount(summary.stars)}`);
+  if (summary.language) parts.push(summary.language);
+  if (summary.description) parts.push(summary.description);
+  return parts.join(' · ');
+}
+
 function describe(error: unknown): string {
   if (error instanceof RepositoryError) return error.message;
   return 'Something went wrong.';
+}
+
+function formatCount(value: number): string {
+  if (value < 1000) return String(value);
+  if (value < 1000000) return `${(value / 1000).toFixed(value < 10000 ? 1 : 0)}k`;
+  return `${(value / 1000000).toFixed(1)}M`;
 }
 
 function formatSize(bytes: number): string {
